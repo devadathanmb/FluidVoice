@@ -268,6 +268,7 @@ struct ContentView: View {
     @Environment(\.accessibilityReduceMotion) private var accessibilityReduceMotion
     @State private var hotkeyManager: GlobalHotkeyManager? = nil
     @State private var hotkeyManagerInitialized: Bool = false
+    @State private var hotkeyAvailability: GlobalHotkeyAvailability = .initializing
 
     @State private var appear = false
     @State private var accessibilityEnabled = false
@@ -1872,7 +1873,7 @@ struct ContentView: View {
                 commandModeShortcutEnabled: self.$isCommandModeShortcutEnabled,
                 rewriteShortcutEnabled: self.$isRewriteModeShortcutEnabled,
                 pasteLastTranscriptionShortcutEnabled: self.$isPasteLastTranscriptionShortcutEnabled,
-                hotkeyManagerInitialized: self.$hotkeyManagerInitialized,
+                hotkeyAvailability: self.$hotkeyAvailability,
                 hotkeyMode: self.$hotkeyMode,
                 enableStreamingPreview: self.$enableStreamingPreview,
                 copyToClipboard: self.$copyToClipboard,
@@ -4290,6 +4291,9 @@ struct ContentView: View {
         )
 
         self.hotkeyManagerInitialized = self.hotkeyManager?.validateEventTapHealth() ?? false
+        self.hotkeyManager?.setAvailabilityDidChange { availability in
+            self.hotkeyAvailability = availability
+        }
 
         self.hotkeyManager?.setHotkeyMode(self.hotkeyMode)
 

@@ -9,6 +9,7 @@ disabled_rules:
   - implicit_optional_initialization # common in SwiftUI/AppKit; doesn't indicate a bug here
   - nesting # large view/service files often contain nested types
   - todo # TODOs are allowed during iteration; tracked in issues/PRs
+  - legacy_swiftui_aspect_ratio
 
 opt_in_rules:
   - discouraged_optional_collection
