@@ -68,7 +68,9 @@ struct WelcomeView: View {
                         VStack(alignment: .leading, spacing: 2) {
                             Text((self.asr.isAsrReady || self.asr.modelsExistOnDisk) ? "Getting Started" : "Welcome to FluidVoice")
                                 .font(self.theme.typography.title)
-                            Text("Talk anywhere. FluidVoice types for you.")
+                            Text(self.accessibilityEnabled
+                                ? "Talk anywhere. FluidVoice types for you."
+                                : "Talk anywhere. FluidVoice records from a global keyboard chord.")
                                 .font(self.theme.typography.bodySmall)
                                 .foregroundStyle(.secondary)
                         }
@@ -135,10 +137,10 @@ struct WelcomeView: View {
 
                                 SetupStepView(
                                     step: 3,
-                                    title: self.accessibilityEnabled ? "Accessibility Access Enabled" : "Enable Accessibility Access",
+                                    title: self.accessibilityEnabled ? "Typing Access Enabled" : "Enable Typing Access (Optional)",
                                     description: self.accessibilityEnabled
                                         ? "Accessibility permission granted for typing into apps"
-                                        : "Drag \(self.appDisplayName) into the Accessibility apps list as shown",
+                                        : "Required only for typing into apps and advanced shortcut types",
                                     status: self.accessibilityEnabled ? .completed : .pending,
                                     action: {
                                         self.openAccessibilitySettings()
@@ -877,7 +879,7 @@ struct OnboardingFlowView: View {
     }
 
     private var isPermissionsReady: Bool {
-        self.isMicrophoneReady && self.isAccessibilityReady
+        self.isMicrophoneReady
     }
 
     private var isAIReady: Bool {
@@ -1769,14 +1771,14 @@ struct OnboardingFlowView: View {
                             FluidOnboardingCompactAppIconMark(size: 66)
                                 .padding(.bottom, 22)
 
-                            Text("Let FluidVoice\nlisten and type")
+                            Text("Let FluidVoice\nlisten anywhere")
                                 .font(.system(size: 28, weight: .semibold))
                                 .foregroundStyle(.white)
                                 .multilineTextAlignment(.center)
                                 .lineSpacing(4)
                                 .padding(.bottom, 16)
 
-                            Text("Two quick permissions make dictation work anywhere.")
+                            Text("Microphone access is required. Typing access is optional.")
                                 .font(.system(size: 15, weight: .medium))
                                 .foregroundStyle(Color.white.opacity(0.62))
                                 .padding(.bottom, 28)
@@ -1819,7 +1821,7 @@ struct OnboardingFlowView: View {
                                 }
 
                                 if !self.isAccessibilityReady {
-                                    Text("Already enabled it? FluidVoice will update when macOS confirms access.")
+                                    Text("You can continue without Accessibility. Registered keyboard chords still work globally, but FluidVoice cannot type or paste into other apps.")
                                         .font(.system(size: 12, weight: .medium))
                                         .foregroundStyle(Color.white.opacity(0.42))
                                         .padding(.top, 2)
@@ -1994,7 +1996,7 @@ struct OnboardingFlowView: View {
         if self.isAccessibilityReady {
             return "Typing access is ready"
         }
-        return self.accessibilitySetupInProgress ? "Finish Accessibility Access" : "Enable Accessibility Access"
+        return self.accessibilitySetupInProgress ? "Finish Accessibility Access" : "Enable typing access (optional)"
     }
 
     private var accessibilityPermissionSubtitle: String {
@@ -2004,7 +2006,7 @@ struct OnboardingFlowView: View {
         if self.accessibilitySetupInProgress {
             return "Use the floating guide to drag \(self.appDisplayName) into the Accessibility apps list."
         }
-        return "Open Settings, then use the floating guide to add \(self.appDisplayName)."
+        return "Needed only for typing, pasting, selected-text capture, mouse shortcuts, Fn shortcuts, and modifier-only shortcuts."
     }
 
     private var appDisplayName: String {
@@ -2015,7 +2017,7 @@ struct OnboardingFlowView: View {
         if self.isAccessibilityReady {
             return "Ready"
         }
-        return self.accessibilitySetupInProgress ? "In Settings" : "Needed"
+        return self.accessibilitySetupInProgress ? "In Settings" : "Optional"
     }
 
     private var accessibilityPermissionActionTitle: String {

@@ -1,4 +1,5 @@
 import AppKit
+import Carbon
 import Combine
 import CoreAudio
 @testable import FluidVoice_Debug
@@ -8,6 +9,7 @@ import XCTest
 final class HotkeyShortcutTests: XCTestCase {
     private let legacyHotkeyShortcutKey = "HotkeyShortcutKey"
     private let primaryDictationShortcutsKey = "PrimaryDictationShortcuts"
+    private let carbonPrimaryShortcutDefaultMigratedKey = "CarbonPrimaryShortcutDefaultMigrated"
     private let pasteLastTranscriptionShortcutKey = "PasteLastTranscriptionHotkeyShortcut"
     private let pasteLastTranscriptionEnabledKey = "PasteLastTranscriptionShortcutEnabled"
     private let microphoneSelectionModeKey = "MicrophoneSelectionMode"
@@ -608,6 +610,55 @@ final class HotkeyShortcutTests: XCTestCase {
 
             XCTAssertEqual(SettingsStore.shared.primaryDictationShortcuts, [legacyShortcut])
             XCTAssertEqual(SettingsStore.shared.hotkeyShortcut, legacyShortcut)
+        }
+    }
+
+    func testFreshInstallPrimaryShortcutUsesCarbonEligibleChord() throws {
+        try self.withRestoredDefaults(keys: [self.legacyHotkeyShortcutKey, self.primaryDictationShortcutsKey]) {
+            UserDefaults.standard.removeObject(forKey: self.legacyHotkeyShortcutKey)
+            UserDefaults.standard.removeObject(forKey: self.primaryDictationShortcutsKey)
+
+            let shortcut = try XCTUnwrap(SettingsStore.shared.primaryDictationShortcuts.first)
+
+            XCTAssertEqual(shortcut, HotkeyShortcut(keyCode: 49, modifierFlags: [.control, .option]))
+            XCTAssertTrue(shortcut.isEligibleForCarbonHotKey)
+        }
+    }
+
+    func testMigratesPersistedRightOptionDefaultToCarbonEligibleChord() throws {
+        try self.withRestoredDefaults(keys: [
+            self.legacyHotkeyShortcutKey,
+            self.primaryDictationShortcutsKey,
+            self.carbonPrimaryShortcutDefaultMigratedKey,
+        ]) {
+            let previousDefault = HotkeyShortcut(keyCode: 61, modifierFlags: [])
+            try UserDefaults.standard.set(JSONEncoder().encode(previousDefault), forKey: self.legacyHotkeyShortcutKey)
+            try UserDefaults.standard.set(JSONEncoder().encode([previousDefault]), forKey: self.primaryDictationShortcutsKey)
+            UserDefaults.standard.removeObject(forKey: self.carbonPrimaryShortcutDefaultMigratedKey)
+
+            SettingsStore.shared.migratePrimaryShortcutForCarbonFallbackIfNeeded()
+
+            XCTAssertEqual(
+                SettingsStore.shared.primaryDictationShortcuts,
+                [HotkeyShortcut(keyCode: 49, modifierFlags: [.control, .option])]
+            )
+        }
+    }
+
+    func testDoesNotMigrateCustomizedPrimaryShortcut() throws {
+        try self.withRestoredDefaults(keys: [
+            self.legacyHotkeyShortcutKey,
+            self.primaryDictationShortcutsKey,
+            self.carbonPrimaryShortcutDefaultMigratedKey,
+        ]) {
+            let customShortcut = HotkeyShortcut(keyCode: 12, modifierFlags: [.command, .shift])
+            try UserDefaults.standard.set(JSONEncoder().encode(customShortcut), forKey: self.legacyHotkeyShortcutKey)
+            try UserDefaults.standard.set(JSONEncoder().encode([customShortcut]), forKey: self.primaryDictationShortcutsKey)
+            UserDefaults.standard.removeObject(forKey: self.carbonPrimaryShortcutDefaultMigratedKey)
+
+            SettingsStore.shared.migratePrimaryShortcutForCarbonFallbackIfNeeded()
+
+            XCTAssertEqual(SettingsStore.shared.primaryDictationShortcuts, [customShortcut])
         }
     }
 
@@ -1856,6 +1907,102 @@ final class HotkeyShortcutTests: XCTestCase {
             transportType: transportType,
             inputDataSourceID: inputDataSourceID
         )
+    }
+
+    func testCarbonEligibilityRequiresModifiedKeyboardChord() {
+        XCTAssertTrue(HotkeyShortcut(keyCode: 49, modifierFlags: [.control, .option]).isEligibleForCarbonHotKey)
+        XCTAssertEqual(
+            HotkeyShortcut(keyCode: 61, modifierFlags: []).carbonIneligibilityReason,
+            .modifierOnly
+        )
+        XCTAssertEqual(
+            HotkeyShortcut(keyCode: 49, modifierFlags: [.function, .control]).carbonIneligibilityReason,
+            .function
+        )
+        XCTAssertEqual(
+            HotkeyShortcut(mouseButton: 3, modifierFlags: [.control]).carbonIneligibilityReason,
+            .mouse
+        )
+        XCTAssertEqual(
+            HotkeyShortcut(keyCode: 49, modifierFlags: []).carbonIneligibilityReason,
+            .missingModifier
+        )
+    }
+
+    func testCarbonModifierMapping() {
+        let shortcut = HotkeyShortcut(keyCode: 49, modifierFlags: [.command, .option, .control, .shift])
+
+        XCTAssertEqual(
+            shortcut.carbonModifierFlags,
+            UInt32(cmdKey | optionKey | controlKey | shiftKey)
+        )
+    }
+
+    func testCarbonActionIDsAreStableAndUnique() {
+        let actions: [CarbonHotKeyAction] = [
+            .primary(0), .primary(1), .promptMode, .commandMode, .rewriteMode,
+            .promptAssignment(0), .promptAssignment(1), .cancel,
+        ]
+
+        XCTAssertEqual(CarbonHotKeyAction.primary(0).id, 0x10000000)
+        XCTAssertEqual(CarbonHotKeyAction.promptAssignment(2).id, 0x50000002)
+        XCTAssertEqual(Set(actions.map(\.id)).count, actions.count)
+    }
+
+    func testCarbonActionIDNamespacesDoNotCollideAtLargeIndexes() {
+        let actions: [CarbonHotKeyAction] = [
+            .primary(1_000_000),
+            .promptMode,
+            .commandMode,
+            .rewriteMode,
+            .promptAssignment(1_000_000),
+            .cancel,
+        ]
+
+        XCTAssertEqual(Set(actions.map(\.id)).count, actions.count)
+    }
+
+    func testCarbonRegistrationPlanFiltersUnsupportedShortcutsAndTracksPrimaryReadiness() {
+        let primary = HotkeyShortcut(keyCode: 49, modifierFlags: [.control, .option])
+        let unsupportedPrimary = HotkeyShortcut(keyCode: 61, modifierFlags: [])
+        let command = HotkeyShortcut(keyCode: 8, modifierFlags: [.command, .shift])
+        let candidates = [
+            CarbonHotKeyRegistrationCandidate(action: .primary(0), shortcut: primary, label: "Primary dictation"),
+            CarbonHotKeyRegistrationCandidate(action: .primary(1), shortcut: unsupportedPrimary, label: "Primary dictation"),
+            CarbonHotKeyRegistrationCandidate(action: .commandMode, shortcut: command, label: "Command mode"),
+        ]
+
+        let plan = CarbonHotKeyRegistrationPlan(candidates: candidates)
+
+        XCTAssertEqual(plan.registrations.map(\.action), [.primary(0), .commandMode])
+        XCTAssertEqual(plan.primaryRegistrationCount, 1)
+        XCTAssertEqual(plan.issues, [
+            "Primary dictation: Modifier-only shortcuts, including Right Option, require Accessibility permission.",
+        ])
+    }
+
+    func testCarbonRegistrationPlanUsesFirstActionForDuplicateChord() {
+        let chord = HotkeyShortcut(keyCode: 49, modifierFlags: [.control, .option])
+        let plan = CarbonHotKeyRegistrationPlan(candidates: [
+            .init(action: .cancel, shortcut: chord, label: "Cancel recording"),
+            .init(action: .primary(0), shortcut: chord, label: "Primary dictation"),
+        ])
+
+        XCTAssertEqual(plan.registrations.map(\.action), [.cancel])
+        XCTAssertEqual(plan.primaryRegistrationCount, 0)
+        XCTAssertEqual(plan.issues, [
+            "Primary dictation (⌥ + ⌃ + Space): duplicates Cancel recording.",
+        ])
+    }
+
+    func testCarbonPressTrackerCoalescesRepeatedPressesUntilRelease() {
+        var tracker = CarbonHotKeyPressTracker()
+
+        XCTAssertTrue(tracker.beginPress(id: 42))
+        XCTAssertFalse(tracker.beginPress(id: 42))
+        XCTAssertTrue(tracker.endPress(id: 42))
+        XCTAssertFalse(tracker.endPress(id: 42))
+        XCTAssertTrue(tracker.beginPress(id: 42))
     }
 
     private func withRestoredDefaults(keys: [String], run: () throws -> Void) rethrows {

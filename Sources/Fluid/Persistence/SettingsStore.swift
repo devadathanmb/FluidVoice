@@ -44,6 +44,7 @@ final class SettingsStore: ObservableObject {
         self.normalizePromptSelectionsIfNeeded()
         self.purgeRetiredAppleIntelligenceState()
         self.repairForcedOnboardingResetIfNeeded()
+        self.migratePrimaryShortcutForCarbonFallbackIfNeeded()
         self.migrateOverlayBottomOffsetTo50IfNeeded()
         self.migratePrivateAIContextDefaultTo4KIfNeeded()
         self.refreshLaunchAtStartupStatus(clearError: true, logMismatch: false)
@@ -1728,7 +1729,7 @@ final class SettingsStore: ObservableObject {
     }
 
     private static var defaultPrimaryDictationShortcut: HotkeyShortcut {
-        HotkeyShortcut(keyCode: 61, modifierFlags: [])
+        HotkeyShortcut(keyCode: 49, modifierFlags: [.control, .option])
     }
 
     private var legacyHotkeyShortcut: HotkeyShortcut {
@@ -1764,6 +1765,22 @@ final class SettingsStore: ObservableObject {
         if let data = try? JSONEncoder().encode(shortcut) {
             self.defaults.set(data, forKey: Keys.hotkeyShortcutKey)
         }
+    }
+
+    func migratePrimaryShortcutForCarbonFallbackIfNeeded() {
+        guard self.defaults.object(forKey: Keys.carbonPrimaryShortcutDefaultMigrated) == nil else { return }
+        defer { self.defaults.set(true, forKey: Keys.carbonPrimaryShortcutDefaultMigrated) }
+
+        let previousDefault = HotkeyShortcut(keyCode: 61, modifierFlags: [])
+        let storedPrimary = self.defaults.data(forKey: Keys.primaryDictationShortcutsKey)
+            .flatMap { try? JSONDecoder().decode([HotkeyShortcut].self, from: $0) }
+        let storedLegacy = self.defaults.data(forKey: Keys.hotkeyShortcutKey)
+            .flatMap { try? JSONDecoder().decode(HotkeyShortcut.self, from: $0) }
+        guard storedPrimary == [previousDefault] || (storedPrimary == nil && storedLegacy == previousDefault) else { return }
+
+        let replacement = Self.defaultPrimaryDictationShortcut
+        self.storePrimaryDictationShortcuts([replacement])
+        self.storeLegacyHotkeyShortcut(replacement)
     }
 
     var pressAndHoldMode: Bool {
@@ -5291,6 +5308,7 @@ private extension SettingsStore {
         static let privateAIInterestCaptured = "PrivateAIProviderInterestCaptured"
         static let hotkeyShortcutKey = "HotkeyShortcutKey"
         static let primaryDictationShortcutsKey = "PrimaryDictationShortcuts"
+        static let carbonPrimaryShortcutDefaultMigrated = "CarbonPrimaryShortcutDefaultMigrated"
         static let preferredInputDeviceUID = "PreferredInputDeviceUID"
         static let microphonePriority = "MicrophonePriority"
         static let suppressedMicrophoneUIDs = "SuppressedMicrophoneUIDs"

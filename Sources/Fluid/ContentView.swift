@@ -208,7 +208,7 @@ struct ContentView: View {
 
     @Environment(\.theme) private var theme
     @State private var hotkeyManager: GlobalHotkeyManager? = nil
-    @State private var hotkeyManagerInitialized: Bool = false
+    @State private var hotkeyAvailability: GlobalHotkeyAvailability = .initializing
 
     @State private var appear = false
     @State private var accessibilityEnabled = false
@@ -424,15 +424,6 @@ struct ContentView: View {
                 let display = storedShortcuts.map(\.displayString).joined(separator: ", ")
                 DebugLogger.shared.debug("Primary dictation shortcuts changed to \(display)", source: "ContentView")
                 self.hotkeyManager?.updatePrimaryShortcuts(storedShortcuts)
-
-                // Update initialization status after shortcut change
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                    self.hotkeyManagerInitialized = self.hotkeyManager?.validateEventTapHealth() ?? false
-                    DebugLogger.shared.debug(
-                        "Hotkey manager initialized: \(self.hotkeyManagerInitialized)",
-                        source: "ContentView"
-                    )
-                }
             }
             .onChange(of: self.selectedSidebarItem) { _, newValue in
                 self.handleModeTransition(from: self.previousSidebarItem, to: newValue)
@@ -450,10 +441,9 @@ struct ContentView: View {
                     self.finishAccessibilityPermissionFlow()
                 }
 
-                if enabled && self.hotkeyManager != nil && !self.hotkeyManagerInitialized {
-                    DebugLogger.shared.debug("Accessibility enabled, reinitializing hotkey manager", source: "ContentView")
-                    self.hotkeyManager?.reinitialize()
-                }
+                guard self.hotkeyManager != nil else { return }
+                DebugLogger.shared.debug("Accessibility changed, reinitializing hotkey manager", source: "ContentView")
+                self.hotkeyManager?.reinitialize()
             }
             .onChange(of: self.selectedModel) { _, newValue in
                 if newValue != "__ADD_MODEL__" {
@@ -1089,6 +1079,7 @@ struct ContentView: View {
         case .cancel:
             self.cancelRecordingHotkeyShortcut = shortcut
             SettingsStore.shared.cancelRecordingHotkeyShortcut = shortcut
+            self.hotkeyManager?.refreshRegistrations()
         case .pasteLast:
             // The hotkey manager reads this shortcut directly from SettingsStore, so no manager update is needed.
             self.pasteLastTranscriptionHotkeyShortcut = shortcut
@@ -1475,7 +1466,7 @@ struct ContentView: View {
             commandModeShortcutEnabled: self.$isCommandModeShortcutEnabled,
             rewriteShortcutEnabled: self.$isRewriteModeShortcutEnabled,
             pasteLastTranscriptionShortcutEnabled: self.$isPasteLastTranscriptionShortcutEnabled,
-            hotkeyManagerInitialized: self.$hotkeyManagerInitialized,
+            hotkeyAvailability: self.$hotkeyAvailability,
             hotkeyMode: self.$hotkeyMode,
             enableStreamingPreview: self.$enableStreamingPreview,
             copyToClipboard: self.$copyToClipboard,
@@ -3572,7 +3563,9 @@ struct ContentView: View {
             }
         )
 
-        self.hotkeyManagerInitialized = self.hotkeyManager?.validateEventTapHealth() ?? false
+        self.hotkeyManager?.setAvailabilityDidChange { availability in
+            self.hotkeyAvailability = availability
+        }
 
         self.hotkeyManager?.setHotkeyMode(self.hotkeyMode)
 
@@ -3620,28 +3613,6 @@ struct ContentView: View {
             self.pasteLastDictationFromHistory()
         }
 
-        // Monitor initialization status
-        Task {
-            // Give some time for initialization
-            try? await Task.sleep(nanoseconds: 3_000_000_000) // 3 seconds
-
-            await MainActor.run {
-                self.hotkeyManagerInitialized = self.hotkeyManager?.validateEventTapHealth() ?? false
-                DebugLogger.shared.debug("Initial hotkey manager health check: \(self.hotkeyManagerInitialized)", source: "ContentView")
-
-                // If still not initialized and accessibility is enabled, try reinitializing
-                if !self.hotkeyManagerInitialized && self.accessibilityEnabled {
-                    self.hotkeyManagerInitialized = self.hotkeyManager?.validateEventTapHealth() ?? false
-                    DebugLogger.shared.debug("Initial hotkey manager health check: \(self.hotkeyManagerInitialized)", source: "ContentView")
-
-                    // If still not initialized and accessibility is enabled, try reinitializing
-                    if !self.hotkeyManagerInitialized && self.accessibilityEnabled {
-                        DebugLogger.shared.debug("Hotkey manager not healthy, attempting reinitalization", source: "ContentView")
-                        self.hotkeyManager?.reinitialize()
-                    }
-                }
-            }
-        }
     }
 
     @discardableResult
@@ -3956,10 +3927,6 @@ extension ContentView {
         self.asr.micStatus == .authorized
     }
 
-    private var onboardingAccessibilityReady: Bool {
-        self.accessibilityEnabled
-    }
-
     private var onboardingAIReady: Bool {
         self.settings.onboardingAISkipped || DictationAIPostProcessingGate.isProviderConfigured()
     }
@@ -4017,9 +3984,6 @@ extension ContentView {
         }
         if !self.onboardingMicrophoneReady {
             missing.append("microphone access")
-        }
-        if !self.onboardingAccessibilityReady {
-            missing.append("Accessibility access")
         }
         if !allowsAIConfiguration, !self.onboardingAIReady {
             missing.append("AI choice")
