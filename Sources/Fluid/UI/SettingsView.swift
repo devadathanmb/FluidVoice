@@ -46,7 +46,7 @@ struct SettingsView: View {
     @Binding var commandModeShortcutEnabled: Bool
     @Binding var rewriteShortcutEnabled: Bool
     @Binding var pasteLastTranscriptionShortcutEnabled: Bool
-    @Binding var hotkeyManagerInitialized: Bool
+    @Binding var hotkeyAvailability: GlobalHotkeyAvailability
     @Binding var hotkeyMode: HotkeyActivationMode
     @Binding var enableStreamingPreview: Bool
     @Binding var copyToClipboard: Bool
@@ -93,6 +93,24 @@ struct SettingsView: View {
 
     private var settingsTertiaryText: Color {
         self.colorScheme == .light ? Color(nsColor: .labelColor).opacity(0.85) : self.theme.palette.secondaryText
+    }
+
+    private var isRecordingAnyShortcut: Bool {
+        self.activeShortcutRecordingTarget != nil
+    }
+
+    private var hotkeyStatusTitle: String {
+        if self.accessibilityEnabled { return "Active" }
+        return self.hotkeyAvailability.arePrimaryShortcutsActive
+            ? "Active: keyboard shortcuts only"
+            : "Limited: primary shortcut unavailable"
+    }
+
+    private var fallbackPrimaryShortcutIssue: String? {
+        guard !self.accessibilityEnabled else { return nil }
+        let reasons = self.primaryDictationShortcuts.compactMap(\.carbonIneligibilityReason)
+        guard reasons.count == self.primaryDictationShortcuts.count else { return nil }
+        return reasons.first?.rawValue
     }
 
     private func isRecording(_ target: ShortcutRecordingTarget) -> Bool {
@@ -648,7 +666,7 @@ struct SettingsView: View {
                                     Text("Recording…")
                                         .font(.caption.weight(.semibold))
                                         .foregroundStyle(.orange)
-                                } else if self.hotkeyManagerInitialized {
+                                } else if self.hotkeyAvailability.isActive {
                                     HStack(spacing: 6) {
                                         Image(systemName: "checkmark.circle.fill")
                                             .foregroundStyle(Color.fluidGreen)
@@ -662,11 +680,44 @@ struct SettingsView: View {
                                         .font(.caption.weight(.semibold))
                                         .foregroundStyle(self.settingsSecondaryText)
                                 }
+                            } else {
+                                Text(self.hotkeyStatusTitle)
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(self.settingsSecondaryText)
                             }
                         }
 
-                        if self.accessibilityEnabled {
-                            VStack(alignment: .leading, spacing: 12) {
+                        VStack(alignment: .leading, spacing: 12) {
+                            if !self.accessibilityEnabled {
+                                VStack(alignment: .leading, spacing: 6) {
+                                    Text("Without Accessibility, FluidVoice can register eligible modified keyboard shortcuts globally.")
+                                        .font(self.theme.typography.bodySmallStrong)
+                                    Text("Text insertion, selected-text capture, mouse shortcuts, Fn shortcuts, and modifier-only shortcuts still require Accessibility. Use Copy to Clipboard to transfer transcription text.")
+                                        .font(.caption)
+                                        .foregroundStyle(self.settingsSecondaryText)
+                                    if let issue = self.fallbackPrimaryShortcutIssue {
+                                        Text("Primary dictation: \(issue)")
+                                            .font(.caption)
+                                            .foregroundStyle(self.theme.palette.warning)
+                                    } else if case let .keyboardShortcutsActive(_, _, issues) = self.hotkeyAvailability,
+                                              let issue = issues.first {
+                                        Text(issue)
+                                            .font(.caption)
+                                            .foregroundStyle(self.theme.palette.warning)
+                                    } else if case let .unavailable(reason) = self.hotkeyAvailability {
+                                        Text(reason)
+                                            .font(.caption)
+                                            .foregroundStyle(self.theme.palette.warning)
+                                    }
+                                    Button("Enable Typing Access") {
+                                        self.openAccessibilitySettings()
+                                    }
+                                    .buttonStyle(.bordered)
+                                    .controlSize(.small)
+                                }
+                                .padding(10)
+                                .background(self.theme.palette.warning.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+                            }
                                 if self.isRecordingAnyShortcut {
                                     HStack(spacing: 8) {
                                         Image(systemName: "hand.point.up.left.fill")
@@ -675,7 +726,7 @@ struct SettingsView: View {
                                             .font(.caption)
                                             .foregroundStyle(.orange)
                                     }
-                                } else if !self.hotkeyManagerInitialized {
+                                } else if !self.hotkeyAvailability.isActive {
                                     HStack(spacing: 8) {
                                         ProgressView()
                                             .controlSize(.small)
@@ -955,61 +1006,6 @@ struct SettingsView: View {
                                     .padding(.top, 6)
                                 }
                                 .padding(12)
-                            }
-                        } else {
-                            // Hotkey disabled - accessibility not enabled
-                            VStack(alignment: .leading, spacing: 12) {
-                                HStack(spacing: 10) {
-                                    Circle()
-                                        .fill(self.theme.palette.warning)
-                                        .frame(width: 8, height: 8)
-
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        HStack(spacing: 6) {
-                                            Image(systemName: "exclamationmark.triangle.fill")
-                                                .foregroundStyle(self.theme.palette.warning)
-                                            Text("Accessibility permissions required")
-                                                .font(self.theme.typography.bodyStrong)
-                                                .foregroundStyle(self.theme.palette.warning)
-                                        }
-                                        Text("Required for global hotkey functionality")
-                                            .font(self.theme.typography.bodySmall)
-                                            .foregroundStyle(self.settingsSecondaryText)
-                                    }
-                                    Spacer()
-
-                                    Button("Open Accessibility Settings") {
-                                        self.openAccessibilitySettings()
-                                    }
-                                    .buttonStyle(.borderedProminent)
-                                    .tint(self.theme.palette.accent)
-                                    .controlSize(.regular)
-                                }
-
-                                self.instructionsBox(
-                                    title: "Follow these steps to enable Accessibility:",
-                                    steps: [
-                                        "Click **Open Accessibility Settings** above",
-                                        "In the Accessibility window, click the **+ button**",
-                                        "Select **\(self.appDisplayName)**; use **Reveal in Finder** below if needed",
-                                        "Click **Open**, then toggle **\(self.appDisplayName) ON** in the list",
-                                    ],
-                                    warningStyle: true
-                                )
-
-                                HStack(spacing: 10) {
-                                    Button("Reveal in Finder") {
-                                        self.revealAppInFinder()
-                                    }
-                                    .buttonStyle(.bordered)
-                                    .controlSize(.small)
-
-                                    Button("Open Applications") {
-                                        self.openApplicationsFolder()
-                                    }
-                                    .buttonStyle(.bordered)
-                                    .controlSize(.small)
-                                }
                             }
                         }
                     }

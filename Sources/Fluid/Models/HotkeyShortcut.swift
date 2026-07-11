@@ -272,6 +272,36 @@ extension HotkeyShortcut {
         self.modifierTriggerFlag != nil
     }
 
+    enum CarbonIneligibilityReason: String, Equatable {
+        case mouse = "Mouse shortcuts require Accessibility permission."
+        case modifierOnly = "Modifier-only shortcuts, including Right Option, require Accessibility permission."
+        case function = "Fn shortcuts require Accessibility permission."
+        case missingModifier = "Without Accessibility, keyboard shortcuts must include Command, Option, Control, or Shift."
+    }
+
+    var carbonIneligibilityReason: CarbonIneligibilityReason? {
+        if self.isMouseShortcut { return .mouse }
+        if self.isModifierOnlyShortcut { return .modifierOnly }
+        if self.relevantModifierFlags.contains(.function) { return .function }
+        if self.relevantModifierFlags.isDisjoint(with: [.command, .option, .control, .shift]) {
+            return .missingModifier
+        }
+        return nil
+    }
+
+    var isEligibleForCarbonHotKey: Bool {
+        self.carbonIneligibilityReason == nil
+    }
+
+    var carbonModifierFlags: UInt32 {
+        var flags: UInt32 = 0
+        if self.relevantModifierFlags.contains(.command) { flags |= UInt32(cmdKey) }
+        if self.relevantModifierFlags.contains(.option) { flags |= UInt32(optionKey) }
+        if self.relevantModifierFlags.contains(.control) { flags |= UInt32(controlKey) }
+        if self.relevantModifierFlags.contains(.shift) { flags |= UInt32(shiftKey) }
+        return flags
+    }
+
     var expectedModifierFlags: NSEvent.ModifierFlags? {
         guard let triggerFlag = self.modifierTriggerFlag else { return nil }
         return self.relevantModifierFlags.union(triggerFlag)
