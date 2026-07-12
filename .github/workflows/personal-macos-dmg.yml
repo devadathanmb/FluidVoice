@@ -1,0 +1,77 @@
+name: Personal macOS DMG
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build tested ARM64 DMG
+    runs-on: macos-15
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout selected revision
+        uses: actions/checkout@v4
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      - name: Resolve Swift package dependencies
+        run: |
+          xcodebuild -resolvePackageDependencies \
+            -project Fluid.xcodeproj \
+            -scheme Fluid \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData"
+
+      - name: Run tests
+        run: |
+          xcodebuild test \
+            -project Fluid.xcodeproj \
+            -scheme Fluid \
+            -destination 'platform=macOS,arch=arm64' \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
+            -disableAutomaticPackageResolution \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO
+
+      - name: Build release app
+        run: |
+          xcodebuild build \
+            -project Fluid.xcodeproj \
+            -scheme Fluid \
+            -configuration Release \
+            -destination 'platform=macOS,arch=arm64' \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
+            -disableAutomaticPackageResolution \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO
+
+      - name: Create DMG
+        run: |
+          APP_PATH="$RUNNER_TEMP/DerivedData/Build/Products/Release/FluidVoice.app"
+          STAGING_DIR="$RUNNER_TEMP/dmg-root"
+          DMG_PATH="$RUNNER_TEMP/FluidVoice-freedom-arm64.dmg"
+
+          test -d "$APP_PATH"
+          mkdir -p "$STAGING_DIR"
+          ditto "$APP_PATH" "$STAGING_DIR/FluidVoice.app"
+          ln -s /Applications "$STAGING_DIR/Applications"
+          hdiutil create \
+            -volname "FluidVoice" \
+            -srcfolder "$STAGING_DIR" \
+            -format UDZO \
+            -ov \
+            "$DMG_PATH"
+
+      - name: Upload DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: FluidVoice-freedom-arm64-dmg
+          path: ${{ runner.temp }}/FluidVoice-freedom-arm64.dmg
+          if-no-files-found: error
+          retention-days: 30
