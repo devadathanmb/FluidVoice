@@ -1,5 +1,6 @@
 import AppKit
 import Carbon
+import Combine
 import Foundation
 
 enum GlobalHotkeyAvailability: Equatable {
@@ -27,7 +28,7 @@ enum GlobalHotkeyAvailability: Equatable {
     }
 }
 
-private nonisolated(unsafe) let carbonHotKeySignature: OSType = 0x464C5643 // "FLVC"
+private nonisolated(unsafe) let carbonHotKeySignature: OSType = 0x464c5643 // "FLVC"
 
 private nonisolated func carbonHotKeyEventHandler(
     _: EventHandlerCallRef?,
@@ -294,11 +295,14 @@ final class GlobalHotkeyManager: NSObject {
     private nonisolated(unsafe) var monitoredMouseButtons: Set<Int> = []
     private nonisolated(unsafe) var carbonEventHandler: EventHandlerRef?
     private nonisolated(unsafe) var carbonHotKeys: [EventHotKeyRef] = []
+    private nonisolated(unsafe) var transientCarbonCancelHotKey: EventHotKeyRef?
     private nonisolated(unsafe) var carbonActions: [UInt32: (action: CarbonHotKeyAction, shortcut: HotkeyShortcut)] = [:]
     private var carbonPressTracker = CarbonHotKeyPressTracker()
+    private var asrRunningCancellable: AnyCancellable?
     private(set) var availability: GlobalHotkeyAvailability = .initializing {
         didSet { self.availabilityDidChange?(self.availability) }
     }
+
     private var availabilityDidChange: ((GlobalHotkeyAvailability) -> Void)?
     private let asrService: ASRService
     private var primaryShortcuts: [HotkeyShortcut]
@@ -575,6 +579,11 @@ final class GlobalHotkeyManager: NSObject {
         self.isShortcutCaptureActiveProvider = isShortcutCaptureActiveProvider
         super.init()
 
+        self.asrRunningCancellable = asrService.$isRunning
+            .removeDuplicates()
+            .sink { [weak self] isRunning in
+                self?.updateTransientCarbonCancelHotKey(isRecording: isRunning)
+            }
         self.initializeWithDelay()
     }
 
@@ -813,11 +822,11 @@ final class GlobalHotkeyManager: NSObject {
             return false
         }
 
-        var candidates = [CarbonHotKeyRegistrationCandidate(
-            action: .cancel,
-            shortcut: SettingsStore.shared.cancelRecordingHotkeyShortcut,
-            label: "Cancel recording"
-        )]
+        let cancelShortcut = SettingsStore.shared.cancelRecordingHotkeyShortcut
+        var candidates: [CarbonHotKeyRegistrationCandidate] = []
+        if cancelShortcut.carbonCancelHotKeyRegistrationMode != .whileRecording {
+            candidates.append(.init(action: .cancel, shortcut: cancelShortcut, label: "Cancel recording"))
+        }
         candidates += self.promptShortcutAssignments.enumerated().map {
             .init(action: .promptAssignment($0.offset), shortcut: $0.element.shortcut, label: "Prompt shortcut")
         }
@@ -851,7 +860,9 @@ final class GlobalHotkeyManager: NSObject {
             if status == noErr, let hotKeyRef {
                 self.carbonHotKeys.append(hotKeyRef)
                 self.carbonActions[registration.action.id] = (registration.action, registration.shortcut)
-                if registration.action.isPrimary { primaryRegisteredCount += 1 }
+                if registration.action.isPrimary {
+                    primaryRegisteredCount += 1
+                }
             } else {
                 let detail = status == OSStatus(eventHotKeyExistsErr)
                     ? "the shortcut is already owned by macOS or another app"
@@ -860,19 +871,65 @@ final class GlobalHotkeyManager: NSObject {
             }
         }
 
-        if self.carbonHotKeys.isEmpty {
+        self.updateTransientCarbonCancelHotKey(isRecording: self.asrService.isRunning)
+        let registeredCount = self.carbonHotKeys.count + (self.transientCarbonCancelHotKey == nil ? 0 : 1)
+        if registeredCount == 0 {
             let reason = issues.first ?? "Configure a keyboard shortcut containing Command, Option, Control, or Shift."
             self.availability = .unavailable(reason: reason)
             return false
         }
 
         self.availability = .keyboardShortcutsActive(
-            registeredCount: self.carbonHotKeys.count,
+            registeredCount: registeredCount,
             primaryRegisteredCount: primaryRegisteredCount,
             issues: issues
         )
-        DebugLogger.shared.info("Registered \(self.carbonHotKeys.count) Carbon keyboard shortcuts", source: "GlobalHotkeyManager")
+        DebugLogger.shared.info("Registered \(registeredCount) Carbon keyboard shortcuts", source: "GlobalHotkeyManager")
         return true
+    }
+
+    private func updateTransientCarbonCancelHotKey(isRecording: Bool) {
+        let shortcut = SettingsStore.shared.cancelRecordingHotkeyShortcut
+        guard !AXIsProcessTrusted(),
+              self.carbonEventHandler != nil,
+              isRecording,
+              shortcut.carbonCancelHotKeyRegistrationMode == .whileRecording
+        else {
+            self.unregisterTransientCarbonCancelHotKey()
+            return
+        }
+        guard self.transientCarbonCancelHotKey == nil else { return }
+
+        var hotKeyRef: EventHotKeyRef?
+        let hotKeyID = EventHotKeyID(signature: carbonHotKeySignature, id: CarbonHotKeyAction.cancel.id)
+        let status = RegisterEventHotKey(
+            UInt32(shortcut.keyCode),
+            shortcut.carbonModifierFlags,
+            hotKeyID,
+            GetApplicationEventTarget(),
+            UInt32(kEventHotKeyExclusive),
+            &hotKeyRef
+        )
+        guard status == noErr, let hotKeyRef else {
+            DebugLogger.shared.error(
+                "Could not register the transient cancel shortcut \(shortcut.displayString) (error \(status))",
+                source: "GlobalHotkeyManager"
+            )
+            return
+        }
+
+        self.transientCarbonCancelHotKey = hotKeyRef
+        self.carbonActions[CarbonHotKeyAction.cancel.id] = (.cancel, shortcut)
+        DebugLogger.shared.info("Registered transient Carbon cancel shortcut", source: "GlobalHotkeyManager")
+    }
+
+    private func unregisterTransientCarbonCancelHotKey() {
+        guard let hotKey = self.transientCarbonCancelHotKey else { return }
+        UnregisterEventHotKey(hotKey)
+        self.transientCarbonCancelHotKey = nil
+        self.carbonActions.removeValue(forKey: CarbonHotKeyAction.cancel.id)
+        self.carbonPressTracker.cancelPress(id: CarbonHotKeyAction.cancel.id)
+        DebugLogger.shared.info("Unregistered transient Carbon cancel shortcut", source: "GlobalHotkeyManager")
     }
 
     private func refreshCarbonRegistrationsIfNeeded() {
@@ -888,6 +945,10 @@ final class GlobalHotkeyManager: NSObject {
     }
 
     private nonisolated func cleanupCarbonHotKeys() {
+        if let hotKey = self.transientCarbonCancelHotKey {
+            UnregisterEventHotKey(hotKey)
+            self.transientCarbonCancelHotKey = nil
+        }
         for hotKey in self.carbonHotKeys {
             UnregisterEventHotKey(hotKey)
         }
@@ -918,7 +979,9 @@ final class GlobalHotkeyManager: NSObject {
 
         switch registration.action {
         case .cancel:
-            if isPressed { _ = self.handleCancelShortcut() }
+            if isPressed {
+                _ = self.handleCancelShortcut()
+            }
             return
         case .primary:
             let press = ActivePrimaryShortcutPress.keyboard(registration.shortcut.keyCode)
@@ -950,10 +1013,18 @@ final class GlobalHotkeyManager: NSObject {
         )
         guard let event else { return }
         var flags: CGEventFlags = []
-        if registration.shortcut.relevantModifierFlags.contains(.command) { flags.insert(.maskCommand) }
-        if registration.shortcut.relevantModifierFlags.contains(.option) { flags.insert(.maskAlternate) }
-        if registration.shortcut.relevantModifierFlags.contains(.control) { flags.insert(.maskControl) }
-        if registration.shortcut.relevantModifierFlags.contains(.shift) { flags.insert(.maskShift) }
+        if registration.shortcut.relevantModifierFlags.contains(.command) {
+            flags.insert(.maskCommand)
+        }
+        if registration.shortcut.relevantModifierFlags.contains(.option) {
+            flags.insert(.maskAlternate)
+        }
+        if registration.shortcut.relevantModifierFlags.contains(.control) {
+            flags.insert(.maskControl)
+        }
+        if registration.shortcut.relevantModifierFlags.contains(.shift) {
+            flags.insert(.maskShift)
+        }
         event.flags = flags
         _ = self.handleKeyEvent(type: isPressed ? .keyDown : .keyUp, event: event, checksPasteLast: false)
     }
@@ -1490,7 +1561,9 @@ final class GlobalHotkeyManager: NSObject {
             }
 
             // Check prompt mode hotkey
-            if self.handlePromptModeKeyDown(keyCode: keyCode, modifiers: eventModifiers) { return nil }
+            if self.handlePromptModeKeyDown(keyCode: keyCode, modifiers: eventModifiers) {
+                return nil
+            }
 
             // Check command mode hotkey first
             if self.commandModeShortcutEnabled,
@@ -1606,7 +1679,9 @@ final class GlobalHotkeyManager: NSObject {
 
         case .keyUp:
             // Prompt mode key up (press and hold mode)
-            if self.handlePromptModeKeyUp(keyCode: keyCode) { return nil }
+            if self.handlePromptModeKeyUp(keyCode: keyCode) {
+                return nil
+            }
 
             // Command mode key up
             // Note: Only check keyCode, not modifiers - user may release modifier before/with main key
@@ -1689,12 +1764,18 @@ final class GlobalHotkeyManager: NSObject {
                     behavior: self.primaryModifierOnlyBehavior(for: shortcut),
                     keyCode: keyCode,
                     modifiers: eventModifiers
-                ) { return nil }
+                ) {
+                    return nil
+                }
             }
 
-            if self.handlePromptAssignmentFlagsChanged(keyCode: keyCode, modifiers: eventModifiers) { return nil }
+            if self.handlePromptAssignmentFlagsChanged(keyCode: keyCode, modifiers: eventModifiers) {
+                return nil
+            }
 
-            if self.handlePromptModeFlagsChanged(keyCode: keyCode, modifiers: eventModifiers) { return nil }
+            if self.handlePromptModeFlagsChanged(keyCode: keyCode, modifiers: eventModifiers) {
+                return nil
+            }
 
             if let commandModeShortcut = self.commandModeShortcut,
                self.handleModifierOnlyShortcutFlagsChanged(
@@ -1727,7 +1808,9 @@ final class GlobalHotkeyManager: NSObject {
                    keyCode: keyCode,
                    modifiers: eventModifiers
                )
-            { return nil }
+            {
+                return nil
+            }
 
             if self.handleModifierOnlyShortcutFlagsChanged(
                 behavior: .init(
@@ -1758,7 +1841,9 @@ final class GlobalHotkeyManager: NSObject {
                 ),
                 keyCode: keyCode,
                 modifiers: eventModifiers
-            ) { return nil }
+            ) {
+                return nil
+            }
 
         default:
             break
@@ -2423,7 +2508,7 @@ final class GlobalHotkeyManager: NSObject {
 
     private func handleCancelShortcut() -> Bool {
         var handled = false
-        if self.asrService.isRunning {
+        if self.asrService.isRunningOrStarting {
             DebugLogger.shared.info("Cancel shortcut pressed - cancelling recording", source: "GlobalHotkeyManager")
             Task { @MainActor in
                 await self.asrService.stopWithoutTranscription()
@@ -2617,7 +2702,7 @@ final class GlobalHotkeyManager: NSObject {
     }
 
     func validateEventTapHealth() -> Bool {
-        let enabled = self.isEventTapEnabled() || !self.carbonHotKeys.isEmpty
+        let enabled = self.isEventTapEnabled() || !self.carbonHotKeys.isEmpty || self.transientCarbonCancelHotKey != nil
         if enabled && !self.isInitialized {
             self.isInitialized = true
         }
