@@ -62,6 +62,12 @@ struct CarbonHotKeyRegistrationPlan {
     }
 }
 
+enum CarbonCancelHotKeyRegistrationMode: Equatable {
+    case persistent
+    case whileRecording
+    case unsupported
+}
+
 struct CarbonHotKeyPressTracker {
     private var pressedIDs: Set<UInt32> = []
 
@@ -71,6 +77,10 @@ struct CarbonHotKeyPressTracker {
 
     mutating func endPress(id: UInt32) -> Bool {
         self.pressedIDs.remove(id) != nil
+    }
+
+    mutating func cancelPress(id: UInt32) {
+        self.pressedIDs.remove(id)
     }
 
     mutating func reset() {

@@ -1929,6 +1929,34 @@ final class HotkeyShortcutTests: XCTestCase {
         )
     }
 
+    func testUnmodifiedEscapeUsesRecordingScopedCarbonRegistration() {
+        let escape = HotkeyShortcut(keyCode: 53, modifierFlags: [])
+
+        XCTAssertEqual(escape.displayString, "Escape")
+        XCTAssertEqual(escape.carbonIneligibilityReason, .missingModifier)
+        XCTAssertEqual(escape.carbonCancelHotKeyRegistrationMode, .whileRecording)
+        XCTAssertEqual(escape.carbonModifierFlags, 0)
+    }
+
+    func testCarbonCancelRegistrationLifetimeMatchesShortcutCapabilities() {
+        XCTAssertEqual(
+            HotkeyShortcut(keyCode: 53, modifierFlags: [.control]).carbonCancelHotKeyRegistrationMode,
+            .persistent
+        )
+        XCTAssertEqual(
+            HotkeyShortcut(keyCode: 61, modifierFlags: []).carbonCancelHotKeyRegistrationMode,
+            .unsupported
+        )
+        XCTAssertEqual(
+            HotkeyShortcut(keyCode: 53, modifierFlags: [.function]).carbonCancelHotKeyRegistrationMode,
+            .unsupported
+        )
+        XCTAssertEqual(
+            HotkeyShortcut(mouseButton: 3, modifierFlags: [.control]).carbonCancelHotKeyRegistrationMode,
+            .unsupported
+        )
+    }
+
     func testCarbonModifierMapping() {
         let shortcut = HotkeyShortcut(keyCode: 49, modifierFlags: [.command, .option, .control, .shift])
 
@@ -2003,6 +2031,16 @@ final class HotkeyShortcutTests: XCTestCase {
         XCTAssertTrue(tracker.endPress(id: 42))
         XCTAssertFalse(tracker.endPress(id: 42))
         XCTAssertTrue(tracker.beginPress(id: 42))
+    }
+
+    func testCancellingTrackedPressAllowsTransientHotKeyToRegisterNextSession() {
+        var tracker = CarbonHotKeyPressTracker()
+        let cancelID = CarbonHotKeyAction.cancel.id
+
+        XCTAssertTrue(tracker.beginPress(id: cancelID))
+        tracker.cancelPress(id: cancelID)
+
+        XCTAssertTrue(tracker.beginPress(id: cancelID))
     }
 
     private func withRestoredDefaults(keys: [String], run: () throws -> Void) rethrows {

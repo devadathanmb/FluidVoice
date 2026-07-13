@@ -94,9 +94,7 @@ final class NotchOverlayManager {
     private var notchAnimationTask: Task<Void, Never>?
     private var notchPresentationTask: Task<Void, Never>?
 
-    // Cancel shortcut monitors for dismissing notch / overlay
-    private var globalEscapeMonitor: Any?
-    private var localEscapeMonitor: Any?
+    private var globalCancelShortcutMonitor: Any?
 
     private(set) var currentNotchPresentationMode: SettingsStore.NotchPresentationMode = .standard
     private(set) var currentNotchPresentationPolicy = NotchPresentationPolicy.standard
@@ -116,36 +114,27 @@ final class NotchOverlayManager {
 
     private init() {
         self.refreshNotchPresentationPolicy()
-        self.setupEscapeKeyMonitors()
+        self.setupGlobalCancelShortcutMonitor()
     }
 
     deinit {
-        if let monitor = globalEscapeMonitor {
-            NSEvent.removeMonitor(monitor)
-        }
-        if let monitor = localEscapeMonitor {
+        if let monitor = globalCancelShortcutMonitor {
             NSEvent.removeMonitor(monitor)
         }
     }
 
-    /// Setup cancel shortcut monitors - both global (other apps) and local (our app)
-    private func setupEscapeKeyMonitors() {
-        let escapeHandler: (NSEvent) -> NSEvent? = { [weak self] event in
-            guard SettingsStore.shared.cancelRecordingHotkeyShortcut.matches(
-                keyCode: event.keyCode,
-                modifiers: event.modifierFlags
-            ) else { return event }
+    private func setupGlobalCancelShortcutMonitor() {
+        self.globalCancelShortcutMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard self != nil,
+                  SettingsStore.shared.cancelRecordingHotkeyShortcut.matches(
+                      keyCode: event.keyCode,
+                      modifiers: event.modifierFlags
+                  )
+            else { return }
 
             Task { @MainActor in
-                guard self != nil else { return }
                 NotchContentState.shared.onCancelRequested?()
             }
-            return nil // Consume the event
-        }
-
-        // Global monitor - catches the cancel shortcut when OTHER apps have focus
-        self.globalEscapeMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { event in
-            _ = escapeHandler(event)
         }
     }
 

@@ -293,6 +293,17 @@ extension HotkeyShortcut {
         self.carbonIneligibilityReason == nil
     }
 
+    var carbonCancelHotKeyRegistrationMode: CarbonCancelHotKeyRegistrationMode {
+        switch self.carbonIneligibilityReason {
+        case nil:
+            .persistent
+        case .missingModifier:
+            .whileRecording
+        case .mouse, .modifierOnly, .function:
+            .unsupported
+        }
+    }
+
     var carbonModifierFlags: UInt32 {
         var flags: UInt32 = 0
         if self.relevantModifierFlags.contains(.command) { flags |= UInt32(cmdKey) }
