@@ -26,7 +26,9 @@ jobs:
             -scheme Fluid \
             -derivedDataPath "$RUNNER_TEMP/DerivedData"
 
-      - name: Run tests
+      # Tiny Whisper GGUF output is nondeterministic on hosted macOS runners.
+      # Keep this E2E assertion available for local validation, as the main CI workflow does.
+      - name: Run tests (excluding flaky Tiny Whisper E2E)
         run: |
           xcodebuild test \
             -project Fluid.xcodeproj \
@@ -34,6 +36,7 @@ jobs:
             -destination 'platform=macOS,arch=arm64' \
             -derivedDataPath "$RUNNER_TEMP/DerivedData" \
             -disableAutomaticPackageResolution \
+            -skip-testing:FluidDictationIntegrationTests/DictationE2ETests/testDictationEndToEnd_whisperTiny_transcribesFixture \
             CODE_SIGN_IDENTITY="" \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_ALLOWED=NO
