@@ -93,7 +93,9 @@ enum PrimaryDictationShortcutEdit: Hashable {
     case replace(Int)
 
     var replacementIndex: Int? {
-        if case let .replace(index) = self { return index }
+        if case let .replace(index) = self {
+            return index
+        }
         return nil
     }
 }
@@ -139,7 +141,9 @@ enum ShortcutRecordingTarget: Hashable {
     }
 
     var promptConfigurationKey: String? {
-        if case let .dictationPrompt(key) = self { return key }
+        if case let .dictationPrompt(key) = self {
+            return key
+        }
         return nil
     }
 
@@ -153,7 +157,9 @@ enum ShortcutRecordingTarget: Hashable {
     }
 
     var isPrimaryDictation: Bool {
-        if case .primaryDictation = self { return true }
+        if case .primaryDictation = self {
+            return true
+        }
         return false
     }
 
@@ -1372,33 +1378,32 @@ struct ContentView: View {
         return .minimum(width: window.mainMinWidth, height: window.mainMinHeight)
     }
 
+    @ViewBuilder
     private var microphoneActionButton: some View {
-        Group {
-            if self.asr.micStatus == .notDetermined {
-                Button {
-                    self.asr.requestMicAccess()
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "mic.fill")
-                        Text("Grant Access")
-                            .fontWeight(.medium)
-                    }
+        if self.asr.micStatus == .notDetermined {
+            Button {
+                self.asr.requestMicAccess()
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "mic.fill")
+                    Text("Grant Access")
+                        .fontWeight(.medium)
                 }
-                .buttonStyle(GlassButtonStyle())
-                .buttonHoverEffect()
-            } else if self.asr.micStatus == .denied {
-                Button {
-                    self.asr.openSystemSettingsForMic()
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "gear")
-                        Text("Open Settings")
-                            .fontWeight(.medium)
-                    }
-                }
-                .buttonStyle(GlassButtonStyle())
-                .buttonHoverEffect()
             }
+            .buttonStyle(GlassButtonStyle())
+            .buttonHoverEffect()
+        } else if self.asr.micStatus == .denied {
+            Button {
+                self.asr.openSystemSettingsForMic()
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "gear")
+                    Text("Open Settings")
+                        .fontWeight(.medium)
+                }
+            }
+            .buttonStyle(GlassButtonStyle())
+            .buttonHoverEffect()
         }
     }
 
@@ -1571,17 +1576,25 @@ struct ContentView: View {
         guard !trimmed.isEmpty else { return "" }
 
         // Built-in providers use their ID directly
-        if ModelRepository.shared.isBuiltIn(trimmed) { return trimmed }
+        if ModelRepository.shared.isBuiltIn(trimmed) {
+            return trimmed
+        }
         // Saved providers use their stable id with "custom:" prefix (if not already present)
-        if trimmed.hasPrefix("custom:") { return trimmed }
+        if trimmed.hasPrefix("custom:") {
+            return trimmed
+        }
         return "custom:\(trimmed)"
     }
 
     private func updateCurrentProvider() {
         // Map baseURL to canonical key for built-ins; else keep existing
         let url = self.openAIBaseURL.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
-        if url.contains("openai.com") { self.currentProvider = "openai"; return }
-        if url.contains("groq.com") { self.currentProvider = "groq"; return }
+        if url.contains("openai.com") {
+            self.currentProvider = "openai"; return
+        }
+        if url.contains("groq.com") {
+            self.currentProvider = "groq"; return
+        }
         // For saved/custom, keep current or derive from selectedProviderID
         self.currentProvider = self.providerKey(for: self.selectedProviderID)
     }
@@ -1907,7 +1920,9 @@ struct ContentView: View {
         // transient overrides such as "Transcribe with Prompt".
         let promptText: String = {
             let override = overrideSystemPrompt?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            if !override.isEmpty { return override }
+            if !override.isEmpty {
+                return override
+            }
             return self.buildSystemPrompt(appInfo: appInfo, dictationSlot: dictationSlot)
         }()
 
@@ -2089,39 +2104,22 @@ struct ContentView: View {
         let activeDictationSlot = self.currentDictationShortcutSlot(for: modeAtStop)
         let promptOverride = self.promptModeOverrideText
         let promptTest = DictationPromptTestCoordinator.shared
-        let shouldUseAIOnStop = activeDictationSlot.map {
-            DictationAIPostProcessingGate.isConfigured(for: $0, appBundleID: self.recordingAppInfo?.bundleId)
-        } ?? DictationAIPostProcessingGate.isConfigured(for: .primary, appBundleID: self.recordingAppInfo?.bundleId)
-        let shouldHideOverlayOnStop = route == .normal &&
-            !wasRewriteMode &&
-            !wasCommandMode &&
-            !promptTest.isActive &&
-            !shouldUseAIOnStop &&
-            !self.settings.spokenSendEnabled
-        var didRequestOverlayHideOnStop = false
         DebugLogger.shared.info(
             "Routing decision snapshot | activeMode=\(modeAtStop.rawValue) | rewrite=\(wasRewriteMode) | command=\(wasCommandMode) | overlay=\(NotchContentState.shared.mode.rawValue)",
             source: "ContentView"
         )
-
         self.clearActiveRecordingMode()
 
-        if shouldHideOverlayOnStop {
-            didRequestOverlayHideOnStop = true
-            DebugLogger.shared.debug("Hiding dictation overlay at stop path", source: "ContentView")
-            self.hideOverlayAsync(reason: "stop_path")
-        } else {
-            // Show "Transcribing" state before calling stop() when the overlay needs
-            // to remain available for prompt, command, rewrite, or AI feedback.
-            DebugLogger.shared.debug("Showing transcription processing state", source: "ContentView")
-            self.appBench("processing_ui_request status=Transcribing")
-            self.menuBarManager.setProcessing(true)
-            NotchOverlayManager.shared.updateTranscriptionText("Transcribing")
-            self.appBench("processing_ui_requested status=Transcribing")
+        // Keep the processing animation visible until the final result is ready to deliver.
+        // Final ASR can take noticeable time even when AI post-processing is disabled.
+        DebugLogger.shared.debug("Showing transcription processing state", source: "ContentView")
+        self.appBench("processing_ui_request status=Transcribing")
+        self.menuBarManager.setProcessing(true)
+        NotchOverlayManager.shared.updateTranscriptionText("Transcribing")
+        self.appBench("processing_ui_requested status=Transcribing")
 
-            // Give SwiftUI a chance to render the processing state before heavier work.
-            await Task.yield()
-        }
+        // Give SwiftUI a chance to render the processing state before heavier work.
+        await Task.yield()
 
         // Stop the ASR service and wait for transcription to complete
         // The processing indicator will stay visible during this phase
@@ -2146,9 +2144,7 @@ struct ContentView: View {
         guard transcribedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false else {
             DebugLogger.shared.debug("Transcription returned empty text", source: "ContentView")
             // Finish the same short exit transition even when no text is emitted.
-            if !didRequestOverlayHideOnStop {
-                await self.menuBarManager.finishProcessingAndHideOverlay()
-            }
+            await self.menuBarManager.finishProcessingAndHideOverlay()
             return
         }
 
@@ -2383,6 +2379,17 @@ struct ContentView: View {
         let frontmostName = frontmostApp?.localizedName ?? "Unknown"
         let isFluidFrontmost = frontmostApp?.bundleIdentifier == Bundle.main.bundleIdentifier
 
+        // When FluidVoice itself is frontmost, the bound editor already receives `finalText`.
+        // Otherwise, copy before serializing history so an immediate Command-V gets the new text.
+        let shouldCopyToClipboard = shouldPersistOutputs &&
+            !sendsExistingDraft &&
+            SettingsStore.shared.copyTranscriptionToClipboard &&
+            !isFluidFrontmost
+
+        if shouldCopyToClipboard {
+            ClipboardService.copyToClipboard(finalText)
+        }
+
         // Save to transcription history (transcription mode only, if enabled)
         if shouldPersistOutputs, !sendsExistingDraft, SettingsStore.shared.saveTranscriptionHistory {
             let historyEntryID = UUID()
@@ -2404,16 +2411,6 @@ struct ContentView: View {
                 timestamp: historyTimestamp,
                 model: transcriptionModelInfo.model
             )
-        }
-        // When FluidVoice itself is frontmost, the bound editor already receives `finalText`.
-        // Avoid re-inserting or overwriting the clipboard in that self-target case.
-        let shouldCopyToClipboard = shouldPersistOutputs &&
-            !sendsExistingDraft &&
-            SettingsStore.shared.copyTranscriptionToClipboard &&
-            !isFluidFrontmost
-
-        if shouldCopyToClipboard {
-            ClipboardService.copyToClipboard(finalText)
         }
 
         var didTypeExternally = false
@@ -2475,12 +2472,12 @@ struct ContentView: View {
             }
             NotchOverlayManager.shared.updateTranscriptionText("")
             NotchContentState.shared.setSpokenSendIndicatorState(.hidden)
-            if !shouldShowAIProcessingFailure, !didRequestOverlayHideOnStop {
+            if !shouldShowAIProcessingFailure {
                 self.hideOverlayAfterOutput()
             }
         }
 
-        if !didTypeExternally, !shouldShowAIProcessingFailure, !didRequestOverlayHideOnStop {
+        if !didTypeExternally, !shouldShowAIProcessingFailure {
             self.hideOverlayAfterOutput()
         }
     }
@@ -3612,7 +3609,6 @@ struct ContentView: View {
         self.hotkeyManager?.setPasteLastTranscriptionCallback {
             self.pasteLastDictationFromHistory()
         }
-
     }
 
     @discardableResult

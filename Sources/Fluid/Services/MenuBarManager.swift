@@ -31,7 +31,7 @@ final class MenuBarManager: NSObject, ObservableObject, NSMenuDelegate {
     /// Overlay management (persistent, independent of window lifecycle)
     private var overlayVisible: Bool = false
 
-    /// Track when AI processing is active.
+    /// Track when final transcription or post-processing is active.
     /// When recording stops, ASRService flips `isRunning` to false, which would normally hide the
     /// overlay. During post-processing we want the overlay to stay visible until processing ends.
     private var isProcessingActive: Bool = false
@@ -153,9 +153,8 @@ final class MenuBarManager: NSObject, ObservableObject, NSMenuDelegate {
             return
         }
 
-        // Don't hide the overlay while AI processing is active.
-        // Without this, the notch can disappear during the short "Refining..." phase because
-        // `isRunning` becomes false before post-processing completes.
+        // Keep the overlay visible after capture stops until final transcription and any
+        // post-processing complete.
         if !isRunning, self.isProcessingActive {
             self.overlayBench("handle_state_return reason=processing_active")
             return
@@ -351,13 +350,13 @@ final class MenuBarManager: NSObject, ObservableObject, NSMenuDelegate {
     func setProcessing(_ processing: Bool) {
         self.overlayBench("set_processing_request processing=\(processing) overlayVisible=\(self.overlayVisible) active=\(self.isProcessingActive)")
 
-        // Track processing state to prevent hide during AI refinement
+        // Track processing state to prevent hiding before final output is ready.
         self.isProcessingActive = processing
         self.updateMenuItemsText()
 
         if processing {
             self.pendingProcessingShowOperation?.cancel()
-            // Cancel any pending hide - we want to keep the overlay visible for AI processing
+            // Cancel any pending hide so the overlay remains visible during processing.
             self.pendingHideOperation?.cancel()
             self.pendingHideOperation = nil
             self.overlayVisible = true

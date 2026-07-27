@@ -3453,7 +3453,7 @@ struct BottomWaveformView: View {
         // Ensure array is properly sized before modifying
         guard self.barHeights.count >= self.barCount else { return }
 
-        // During AI processing we want the visualizer to settle to silence (flat).
+        // During processing we want the visualizer to settle to silence (flat).
         withAnimation(.easeOut(duration: 0.18)) {
             for i in 0..<self.barCount {
                 self.barHeights[i] = self.minHeight
