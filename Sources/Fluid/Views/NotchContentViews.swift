@@ -100,7 +100,7 @@ class NotchContentState: ObservableObject {
     @Published var transcriptionText: String = ""
     @Published var mode: OverlayMode = .dictation
     @Published var promptPickerMode: SettingsStore.PromptMode = .dictate
-    @Published var isProcessing: Bool = false // AI processing state
+    @Published var isProcessing: Bool = false // Final transcription or post-processing state
     @Published var isAIProcessingFailureVisible: Bool = false
     @Published private(set) var aiProcessingFailureMessage: String = "AI Enhancement failed"
     @Published private(set) var canRetryAIProcessingFailure: Bool = true
@@ -171,7 +171,7 @@ class NotchContentState: ObservableObject {
             .store(in: &self.cancellables)
     }
 
-    /// Set AI processing state
+    /// Set final transcription or post-processing state.
     func setProcessing(_ processing: Bool) {
         if processing {
             self.clearAIProcessingFailure()
