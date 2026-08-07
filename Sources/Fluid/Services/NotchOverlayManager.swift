@@ -467,10 +467,9 @@ final class NotchOverlayManager {
             return
         }
 
-        // If bottom overlay is visible, update its processing state
+        // Shared content state drives the bottom overlay; do not also show the notch.
         if self.isBottomOverlayVisible {
-            BottomOverlayWindowController.shared.setProcessing(processing)
-            Self.overlayBench("set_processing_forwarded target=bottom")
+            Self.overlayBench("set_processing_applied target=bottom")
             return
         }
 

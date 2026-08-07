@@ -350,6 +350,13 @@ final class MenuBarManager: NSObject, ObservableObject, NSMenuDelegate {
     func setProcessing(_ processing: Bool) {
         self.overlayBench("set_processing_request processing=\(processing) overlayVisible=\(self.overlayVisible) active=\(self.isProcessingActive)")
 
+        // Nested transcription, rewrite, and command paths can request the same
+        // state. Treat processing as a transition so presentation work runs once.
+        guard self.isProcessingActive != processing else {
+            self.overlayBench("set_processing_return reason=unchanged")
+            return
+        }
+
         // Track processing state to prevent hiding before final output is ready.
         self.isProcessingActive = processing
         self.updateMenuItemsText()

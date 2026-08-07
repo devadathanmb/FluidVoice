@@ -1,3 +1,4 @@
+import Combine
 @testable import FluidVoice_Debug
 import Foundation
 import XCTest
@@ -2527,7 +2528,7 @@ extension DictationE2ETests {
 }
 
 @MainActor
-final class OverlayFailureStateTests: XCTestCase {
+final class OverlayContentStateTests: XCTestCase {
     func testCustomNonRetryableMessage() {
         let state = NotchContentState.shared
         defer {
@@ -2548,6 +2549,27 @@ final class OverlayFailureStateTests: XCTestCase {
 
         XCTAssertEqual(state.aiProcessingFailureMessage, "AI Enhancement failed")
         XCTAssertTrue(state.canRetryAIProcessingFailure)
+    }
+
+    func testProcessingPublishesOnlyActualTransitions() {
+        let state = NotchContentState.shared
+        state.setProcessing(false)
+
+        var processingTransitions: [Bool] = []
+        let observation = state.$isProcessing
+            .dropFirst()
+            .sink { processingTransitions.append($0) }
+        defer {
+            observation.cancel()
+            state.setProcessing(false)
+        }
+
+        state.setProcessing(true)
+        state.setProcessing(true)
+        state.setProcessing(false)
+        state.setProcessing(false)
+
+        XCTAssertEqual(processingTransitions, [true, false])
     }
 }
 

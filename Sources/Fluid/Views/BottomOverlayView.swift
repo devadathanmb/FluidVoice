@@ -270,11 +270,6 @@ final class BottomOverlayWindowController {
         NotchContentState.shared.bottomOverlayAudioLevel = 0
     }
 
-    func setProcessing(_ processing: Bool) {
-        Self.overlayBench("bottom_set_processing processing=\(processing)")
-        NotchContentState.shared.setProcessing(processing)
-    }
-
     func refreshSizeForContent() {
         self.scheduleSizeAndPositionUpdate()
     }
