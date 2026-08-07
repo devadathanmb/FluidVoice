@@ -176,6 +176,8 @@ class NotchContentState: ObservableObject {
         if processing {
             self.clearAIProcessingFailure()
         }
+        guard self.isProcessing != processing else { return }
+
         self.isProcessing = processing
     }
 
@@ -189,6 +191,7 @@ class NotchContentState: ObservableObject {
     }
 
     func clearAIProcessingFailure() {
+        guard self.isAIProcessingFailureVisible else { return }
         self.isAIProcessingFailureVisible = false
     }
 

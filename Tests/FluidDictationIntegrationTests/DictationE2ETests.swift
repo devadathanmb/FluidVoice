@@ -2905,6 +2905,27 @@ final class OverlayFailureStateTests: XCTestCase {
         XCTAssertEqual(state.aiProcessingFailureMessage, "AI Enhancement failed")
         XCTAssertTrue(state.canRetryAIProcessingFailure)
     }
+
+    func testProcessingPublishesOnlyActualTransitions() {
+        let state = NotchContentState.shared
+        state.setProcessing(false)
+
+        var processingTransitions: [Bool] = []
+        let observation = state.$isProcessing
+            .dropFirst()
+            .sink { processingTransitions.append($0) }
+        defer {
+            observation.cancel()
+            state.setProcessing(false)
+        }
+
+        state.setProcessing(true)
+        state.setProcessing(true)
+        state.setProcessing(false)
+        state.setProcessing(false)
+
+        XCTAssertEqual(processingTransitions, [true, false])
+    }
 }
 
 final class AudioBudgetMeasurementGateTests: XCTestCase {

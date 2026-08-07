@@ -405,6 +405,11 @@ final class MenuBarManager: NSObject, ObservableObject, NSMenuDelegate {
     func setProcessing(_ processing: Bool) {
         self.overlayBench("set_processing_request processing=\(processing) overlayVisible=\(self.overlayVisible) active=\(self.isProcessingActive)")
 
+        guard self.isProcessingActive != processing else {
+            self.overlayBench("set_processing_return reason=unchanged")
+            return
+        }
+
         if processing {
             self.reserveProcessingOverlay()
 
