@@ -1684,7 +1684,7 @@ extension DictationE2ETests {
             settings.verifiedProviderFingerprints = [
                 "ollama": DictationAIPostProcessingGate.providerFingerprint(
                     baseURL: ModelRepository.shared.defaultBaseURL(for: "ollama"),
-                    apiKey: ""
+                    apiKey: settings.providerAPIKeys["ollama"] ?? ""
                 ) ?? "",
             ]
             settings.setDictationPromptSelection(.default, for: .primary)
@@ -1881,7 +1881,7 @@ extension DictationE2ETests {
             settings.verifiedProviderFingerprints = [
                 "ollama": DictationAIPostProcessingGate.providerFingerprint(
                     baseURL: ModelRepository.shared.defaultBaseURL(for: "ollama"),
-                    apiKey: ""
+                    apiKey: settings.providerAPIKeys["ollama"] ?? ""
                 ) ?? "",
             ]
             settings.setDictationPromptSelection(.default, for: .primary)
@@ -2975,5 +2975,15 @@ final class SimpleUpdaterTests: XCTestCase {
 
         XCTAssertFalse(gate.isActive)
         XCTAssertTrue(gate.begin())
+    }
+}
+
+@MainActor
+final class DictationPostProcessingTests: XCTestCase {
+    func testWhitespaceOnlyInputSkipsPostProcessing() async throws {
+        let result = try await DictationPostProcessingService.shared.process(" \n\t ")
+
+        XCTAssertEqual(result.text, "")
+        XCTAssertEqual(result.model, "")
     }
 }

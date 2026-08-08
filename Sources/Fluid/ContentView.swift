@@ -2260,6 +2260,11 @@ struct ContentView: View {
         streamHandler: PrivateAIStreamHandler? = nil,
         benchmarkID: String? = nil
     ) async throws -> String {
+        guard !inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            DebugLogger.shared.debug("Skipping AI processing for empty input", source: "ContentView")
+            return ""
+        }
+
         try await self.processTextWithAIMetrics(
             inputText,
             overrideSystemPrompt: overrideSystemPrompt,
@@ -2536,7 +2541,9 @@ struct ContentView: View {
             self.logDictationPromptTrace("Model answer (A)", value: response.content)
         }
 
-        guard !response.content.isEmpty else {
+        // Dictation cleanup may legitimately remove a filler-only ASR result;
+        // chat callers still need an empty response reported as a provider error.
+        guard !response.content.isEmpty || isDictationCall else {
             throw AIProcessingError.emptyResponse
         }
         return AITextProcessingResult(
@@ -2551,6 +2558,13 @@ struct ContentView: View {
     // This method is no longer used - LLMClient.call() handles streaming internally
 
     // MARK: - Stop and Process Transcription
+
+    private func finishDictationWithoutOutput(reason: String) async {
+        DebugLogger.shared.debug(reason, source: "ContentView")
+        self.recordingPrecedingText = ""
+        NotchOverlayManager.shared.updateTranscriptionText("")
+        await self.menuBarManager.finishProcessingAndHideOverlay()
+    }
 
     private func stopAndProcessTranscription(route: DictationOutputRoute = .normal) async {
         let pipelineID = UUID().uuidString
@@ -2618,6 +2632,7 @@ struct ContentView: View {
         )
 
         guard transcribedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false else {
+            self.recordingPrecedingText = ""
             // Empty results have no delivery callback, so clear their stale
             // preview before the existing empty-result dismissal path runs.
             NotchOverlayManager.shared.updateTranscriptionText("")
@@ -2701,6 +2716,13 @@ struct ContentView: View {
         let sendsExistingDraft = spokenSendParse.shouldSend &&
             normalizedTranscribedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
 
+        guard sendsExistingDraft || !normalizedTranscribedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            await self.finishDictationWithoutOutput(
+                reason: "Transcription became empty after normalization; skipping AI post-processing"
+            )
+            return
+        }
+
         let shouldUseAI = !sendsExistingDraft && (activeDictationSlot.map {
             DictationAIPostProcessingGate.isConfigured(for: $0, appBundleID: appInfo.bundleId)
         } ?? DictationAIPostProcessingGate.isConfigured(for: .primary, appBundleID: appInfo.bundleId))
@@ -2768,6 +2790,13 @@ struct ContentView: View {
             )
         } else {
             finalText = normalizedTranscribedText
+        }
+
+        guard sendsExistingDraft || !finalText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            await self.finishDictationWithoutOutput(
+                reason: "AI post-processing removed all transcription text; skipping output delivery"
+            )
+            return
         }
 
         // Normalize literal command and mention syntax after AI cleanup and before final user preferences.
