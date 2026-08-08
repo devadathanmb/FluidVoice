@@ -240,9 +240,6 @@ final class DictationPostProcessingService {
         config.timeoutSeconds = 120
 
         let response = try await LLMClient.shared.call(config)
-        guard !response.content.isEmpty else {
-            throw AIProcessingError.emptyResponse
-        }
         return Result(
             text: ASRService.applyGAAVFormatting(response.content),
             providerID: resolved.providerID,
