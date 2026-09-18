@@ -2276,7 +2276,7 @@ struct ContentView: View {
             return ""
         }
 
-        try await self.processTextWithAIMetrics(
+        return try await self.processTextWithAIMetrics(
             inputText,
             overrideSystemPrompt: overrideSystemPrompt,
             overrideProviderID: overrideProviderID,

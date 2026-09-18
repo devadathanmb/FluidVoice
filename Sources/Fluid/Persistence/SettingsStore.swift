@@ -4098,7 +4098,7 @@ final class SettingsStore: ObservableObject {
             return
         }
         let policy: NSApplication.ActivationPolicy = self.showInDock ? .regular : .accessory
-        guard NSApp.activationPolicy != policy else { return }
+        guard NSApp.activationPolicy() != policy else { return }
         if NSApp.setActivationPolicy(policy) {
             DebugLogger.shared.info("Dock activation policy updated to \(policy.rawValue)", source: "SettingsStore")
         } else {

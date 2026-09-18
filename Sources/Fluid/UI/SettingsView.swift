@@ -82,10 +82,6 @@ struct SettingsView: View {
     let revealAppInFinder: () -> Void
     let openApplicationsFolder: () -> Void
 
-    private var isRecordingAnyShortcut: Bool {
-        self.activeShortcutRecordingTarget != nil
-    }
-
     private var hotkeyStatusTitle: String {
         if self.accessibilityEnabled { return "Active" }
         return self.hotkeyAvailability.arePrimaryShortcutsActive
@@ -296,25 +292,10 @@ struct SettingsView: View {
 
                                     HStack(spacing: 10) {
                                         ForEach(SettingsStore.AccentColorOption.allCases) { option in
-                                            let isSelected = self.settings.accentColorOption == option
-                                            Button {
-                                                self.settings.accentColorOption = option
-                                            } label: {
-                                                Circle()
-                                                    .fill(Color(hex: option.hex) ?? .gray)
-                                                    .frame(width: 16, height: 16)
-                                                    .overlay(
-                                                        Circle()
-                                                            .stroke(
-                                                                isSelected ? self.theme.palette.accent : self.theme.palette.cardBorder.opacity(0.5),
-                                                                lineWidth: isSelected ? 2 : 1
-                                                            )
-                                                    )
-                                                    .padding(4)
-                                            }
-                                            .buttonStyle(.plain)
-                                            .accessibilityLabel(option.rawValue)
-                                            .help(option.rawValue)
+                                            self.accentColorDot(
+                                                for: option,
+                                                isSelected: self.settings.accentColorOption == option
+                                            )
                                         }
                                     }
                                     .padding(.horizontal, 6)
@@ -669,7 +650,7 @@ struct SettingsView: View {
                                     Text("Recording…")
                                         .font(.caption.weight(.semibold))
                                         .foregroundStyle(.orange)
-                                } else if self.hotkeyManagerInitialized {
+                                } else if self.hotkeyAvailability.isActive {
                                     HStack(spacing: 6) {
                                         Image(systemName: "checkmark.circle.fill")
                                             .foregroundStyle(Color.fluidGreen)
@@ -730,7 +711,7 @@ struct SettingsView: View {
                                             .font(.caption)
                                             .foregroundStyle(.orange)
                                     }
-                                } else if !self.hotkeyManagerInitialized {
+                                } else if self.hotkeyAvailability == .initializing {
                                     HStack(spacing: 8) {
                                         ProgressView()
                                             .controlSize(.small)
@@ -1035,7 +1016,6 @@ struct SettingsView: View {
                                 }
                                 .padding(12)
                             }
-                        }
                     }
                     .padding(16)
                 }
@@ -2007,6 +1987,30 @@ struct SettingsView: View {
                 .tint(self.theme.palette.accent)
                 .labelsHidden()
         }
+    }
+
+    private func accentColorDot(
+        for option: SettingsStore.AccentColorOption,
+        isSelected: Bool
+    ) -> some View {
+        Button {
+            self.settings.accentColorOption = option
+        } label: {
+            Circle()
+                .fill(Color(hex: option.hex) ?? .gray)
+                .frame(width: 16, height: 16)
+                .overlay(
+                    Circle()
+                        .stroke(
+                            isSelected ? self.theme.palette.accent : self.theme.palette.cardBorder.opacity(0.5),
+                            lineWidth: isSelected ? 2 : 1
+                        )
+                )
+                .padding(4)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(option.rawValue)
+        .help(option.rawValue)
     }
 
     private func instructionsBox(
