@@ -1016,6 +1016,23 @@ final class GlobalHotkeyManager: NSObject {
         _ = self.handleKeyEvent(type: isPressed ? .keyDown : .keyUp, event: event, checksPasteLast: false)
     }
 
+    /// Route a key event from FluidVoice's own window through Carbon's press tracker.
+    /// If Carbon also delivers the event, the tracker prevents a duplicate action.
+    func handleFocusedAppPrimaryShortcut(keyCode: UInt16, modifiers: NSEvent.ModifierFlags, isPressed: Bool) -> Bool {
+        guard !AXIsProcessTrusted(), NSApp.isActive,
+              !(self.isShortcutCaptureActiveProvider?() ?? false) else { return false }
+
+        let registration = self.carbonActions.first { id, value in
+            guard value.action.isPrimary, value.shortcut.keyCode == keyCode else { return false }
+            return isPressed
+                ? value.shortcut.matches(keyCode: keyCode, modifiers: modifiers)
+                : self.carbonPressTracker.isPressed(id: id)
+        }
+        guard let registration else { return false }
+        self.handleCarbonHotKey(id: registration.key, isPressed: isPressed)
+        return true
+    }
+
     private nonisolated func cleanupEventTap() {
         if let tap = eventTap {
             CGEvent.tapEnable(tap: tap, enable: false)

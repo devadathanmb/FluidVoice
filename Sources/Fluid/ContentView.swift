@@ -706,7 +706,7 @@ struct ContentView: View {
     private func installShortcutCaptureMonitor() {
         self.removeShortcutCaptureMonitor()
         self.shortcutCaptureMonitor = NSEvent.addLocalMonitorForEvents(
-            matching: [.keyDown, .flagsChanged, .leftMouseDown, .rightMouseDown, .otherMouseDown]
+            matching: [.keyDown, .keyUp, .flagsChanged, .leftMouseDown, .rightMouseDown, .otherMouseDown]
         ) { event in
             self.handleShortcutCaptureEvent(event)
         }
@@ -725,6 +725,12 @@ struct ContentView: View {
 
         if event.type == .keyDown {
             return self.handleShortcutKeyDownEvent(event, modifiers: eventModifiers, isRecordingAnyShortcut: isRecordingAnyShortcut, recordingTarget: recordingTarget)
+        } else if event.type == .keyUp {
+            if self.hotkeyManager?.handleFocusedAppPrimaryShortcut(
+                keyCode: event.keyCode, modifiers: eventModifiers, isPressed: false
+            ) == true {
+                return nil
+            }
         } else if event.type == .flagsChanged {
             return self.handleShortcutFlagsChangedEvent(event, modifiers: eventModifiers, isRecordingAnyShortcut: isRecordingAnyShortcut, recordingTarget: recordingTarget)
         } else if event.type == .leftMouseDown || event.type == .rightMouseDown || event.type == .otherMouseDown {
@@ -744,6 +750,11 @@ struct ContentView: View {
             if self.cancelRecordingHotkeyShortcut.matches(keyCode: event.keyCode, modifiers: eventModifiers),
                self.handleCancelShortcut()
             {
+                return nil
+            }
+            if self.hotkeyManager?.handleFocusedAppPrimaryShortcut(
+                keyCode: event.keyCode, modifiers: eventModifiers, isPressed: true
+            ) == true {
                 return nil
             }
             self.shortcutRecordingMessage = nil
