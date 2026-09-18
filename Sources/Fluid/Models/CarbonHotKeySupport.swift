@@ -83,6 +83,10 @@ struct CarbonHotKeyPressTracker {
         self.pressedIDs.remove(id)
     }
 
+    func isPressed(id: UInt32) -> Bool {
+        self.pressedIDs.contains(id)
+    }
+
     mutating func reset() {
         self.pressedIDs.removeAll()
     }

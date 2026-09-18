@@ -2457,14 +2457,7 @@ final class SettingsStore: ObservableObject {
         #if os(macOS)
         self.refreshLaunchAtStartupStatus(clearError: true)
 
-        // Apply dock visibility setting on app launch
-        let dockVisible = self.showInDock
-        DebugLogger.shared.info("Initializing app with dock visibility: \(dockVisible)", source: "SettingsStore")
-
-        // Set activation policy based on saved preference
-        DispatchQueue.main.async {
-            NSApp.setActivationPolicy(dockVisible ? .regular : .accessory)
-        }
+        self.applyDockVisibilityPolicy()
         #endif
     }
 
@@ -2476,7 +2469,7 @@ final class SettingsStore: ObservableObject {
         set {
             self.defaults.set(newValue, forKey: Keys.showInDock)
             // Update dock visibility
-            self.updateDockVisibility(newValue)
+            self.applyDockVisibilityPolicy()
         }
     }
 
@@ -4098,55 +4091,19 @@ final class SettingsStore: ObservableObject {
         }
     }
 
-    private func updateDockVisibility(_ visible: Bool) {
+    func applyDockVisibilityPolicy() {
         #if os(macOS)
-        // IMPORTANT: This is a simplified implementation for development
-        // In production, consider these approaches:
-        // 1. Use LSUIElement in Info.plist to control default dock visibility
-        // 2. Implement a proper helper app or service for dock management
-        // 3. Use NSApplication.shared.setActivationPolicy() for better control
-
-        // For now, we'll try multiple approaches with fallbacks
-
-        DebugLogger.shared.debug(
-            "Attempting to update dock visibility to: \(visible ? "visible" : "hidden")",
-            source: "SettingsStore"
-        )
-
-        // Method 1: Try the deprecated TransformProcessType (may not work on all systems)
-        let transformState = visible ? ProcessApplicationTransformState(kProcessTransformToForegroundApplication)
-            : ProcessApplicationTransformState(kProcessTransformToUIElementApplication)
-
-        var psn = ProcessSerialNumber(highLongOfPSN: 0, lowLongOfPSN: UInt32(kCurrentProcess))
-        let result = TransformProcessType(&psn, transformState)
-
-        if result == 0 {
-            DebugLogger.shared.info("✓ Dock visibility updated using TransformProcessType", source: "SettingsStore")
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { self.applyDockVisibilityPolicy() }
+            return
+        }
+        let policy: NSApplication.ActivationPolicy = self.showInDock ? .regular : .accessory
+        guard NSApp.activationPolicy != policy else { return }
+        if NSApp.setActivationPolicy(policy) {
+            DebugLogger.shared.info("Dock activation policy updated to \(policy.rawValue)", source: "SettingsStore")
         } else {
-            DebugLogger.shared
-                .warning(
-                    "⚠️ TransformProcessType failed (error: \(result)). This is expected on some macOS versions.",
-                    source: "SettingsStore"
-                )
-            DebugLogger.shared.debug(
-                "   The setting is saved and will be applied when possible.",
-                source: "SettingsStore"
-            )
+            DebugLogger.shared.warning("Could not update Dock activation policy to \(policy.rawValue)", source: "SettingsStore")
         }
-
-        // Method 2: Try to notify the system of the change
-        // This may help with some system caches
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-            NSApp.setActivationPolicy(visible ? .regular : .accessory)
-            DebugLogger.shared.info(
-                "✓ Activation policy updated to: \(visible ? "regular" : "accessory")",
-                source: "SettingsStore"
-            )
-        }
-
-        // Store the intended state for reference
-        UserDefaults.standard.set(visible, forKey: "IntendedDockVisibility")
-        DebugLogger.shared.info("✓ Dock visibility preference saved: \(visible)", source: "SettingsStore")
         #endif
     }
 

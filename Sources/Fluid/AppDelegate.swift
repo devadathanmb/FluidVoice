@@ -132,20 +132,21 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        // LaunchServices can restore the bundle's regular activation policy when
+        // reopening a running app, even when activation is suppressed.
+        SettingsStore.shared.applyDockVisibilityPolicy()
         if self.shouldSuppressNextReopenActivation {
             self.shouldSuppressNextReopenActivation = false
             return true
         }
 
-        // LaunchServices can restore the bundle's regular activation policy when
-        // reopening a running app, so reapply the user's Dock preference first.
-        self.applyDockVisibilityPolicy()
         sender.activate(ignoringOtherApps: true)
 
         return !self.bringMainWindowToFrontIfPresent()
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
+        SettingsStore.shared.applyDockVisibilityPolicy()
         DispatchQueue.global(qos: .utility).async {
             try? KeychainService.shared.refreshCachedKeys()
         }
@@ -195,16 +196,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
             == OSType(keyAELaunchedAsLogInItem)
     }
 
-    /// Apply the user's dock-visibility preference ("Hide from dock", issue #162).
-    /// Re-applied after operations that can reset the process activation policy - notably the
-    /// LaunchServices reopen below, which restores the bundle default (.regular) even when the
-    /// app is reopened without activation, so hide-from-dock is honored on login launches (#396).
-    private func applyDockVisibilityPolicy() {
-        NSApp.setActivationPolicy(SettingsStore.shared.showInDock ? .regular : .accessory)
-    }
-
     private func openMainWindowOnLaunch() {
-        self.applyDockVisibilityPolicy()
+        SettingsStore.shared.applyDockVisibilityPolicy()
 
         // Users can opt out of showing the window for login-item launches (#369).
         // The window must still be CREATED either way - ContentView's appearance
@@ -286,7 +279,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
             // the configured policy so login launches honor the setting (#396). The completion
             // runs off the main thread, so hop back before touching NSApp.
             DispatchQueue.main.async {
-                self?.applyDockVisibilityPolicy()
+                SettingsStore.shared.applyDockVisibilityPolicy()
             }
         }
     }
