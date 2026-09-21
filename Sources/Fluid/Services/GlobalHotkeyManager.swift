@@ -287,11 +287,6 @@ final class GlobalHotkeyManager: NSObject {
     private nonisolated(unsafe) var state = HotkeyState()
     private nonisolated(unsafe) var eventTap: CFMachPort?
     private nonisolated(unsafe) var runLoopSource: CFRunLoopSource?
-    private nonisolated(unsafe) var mouseObserverTap: CFMachPort?
-    private nonisolated(unsafe) var mouseObserverSource: CFRunLoopSource?
-    private nonisolated(unsafe) var mouseShortcutTap: CFMachPort?
-    private nonisolated(unsafe) var mouseShortcutSource: CFRunLoopSource?
-    private nonisolated(unsafe) var monitoredMouseButtons: Set<Int> = []
     private nonisolated(unsafe) var carbonEventHandler: EventHandlerRef?
     private nonisolated(unsafe) var carbonHotKeys: [EventHotKeyRef] = []
     private nonisolated(unsafe) var transientCarbonCancelHotKey: EventHotKeyRef?
@@ -749,7 +744,7 @@ final class GlobalHotkeyManager: NSObject {
             place: .headInsertEventTap,
             options: .defaultTap,
             eventsOfInterest: CGEventMask(eventMask),
-            callback: { proxy, type, event, refcon -> Unmanaged<CGEvent>? in
+            callback: { _, type, event, refcon -> Unmanaged<CGEvent>? in
                 guard let refcon = refcon else { return Unmanaged.passUnretained(event) }
                 let manager = Unmanaged<GlobalHotkeyManager>.fromOpaque(refcon)
                     .takeUnretainedValue()
@@ -784,8 +779,6 @@ final class GlobalHotkeyManager: NSObject {
         }
 
         DebugLogger.shared.info("Event tap successfully created and enabled", source: "GlobalHotkeyManager")
-        self.logActiveShortcuts(reason: "event tap ready")
-        self.setupMouseTaps()
         self.availability = .eventTapActive
         return true
     }
