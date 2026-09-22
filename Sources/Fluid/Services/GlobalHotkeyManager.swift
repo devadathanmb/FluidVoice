@@ -291,6 +291,7 @@ final class GlobalHotkeyManager: NSObject {
     private nonisolated(unsafe) var carbonHotKeys: [EventHotKeyRef] = []
     private nonisolated(unsafe) var transientCarbonCancelHotKey: EventHotKeyRef?
     private nonisolated(unsafe) var carbonActions: [UInt32: (action: CarbonHotKeyAction, shortcut: HotkeyShortcut)] = [:]
+    private nonisolated(unsafe) var focusedAppShortcutMonitor: Any?
     private var carbonPressTracker = CarbonHotKeyPressTracker()
     private var asrRunningCancellable: AnyCancellable?
     private(set) var availability: GlobalHotkeyAvailability = .initializing {
@@ -858,6 +859,7 @@ final class GlobalHotkeyManager: NSObject {
             self.availability = .unavailable(reason: reason)
             return false
         }
+        self.installFocusedAppShortcutMonitor()
 
         self.availability = .keyboardShortcutsActive(
             registeredCount: registeredCount,
@@ -925,6 +927,10 @@ final class GlobalHotkeyManager: NSObject {
     }
 
     private nonisolated func cleanupCarbonHotKeys() {
+        if let monitor = self.focusedAppShortcutMonitor {
+            NSEvent.removeMonitor(monitor)
+            self.focusedAppShortcutMonitor = nil
+        }
         if let hotKey = self.transientCarbonCancelHotKey {
             UnregisterEventHotKey(hotKey)
             self.transientCarbonCancelHotKey = nil
@@ -1024,6 +1030,23 @@ final class GlobalHotkeyManager: NSObject {
         guard let registration else { return false }
         self.handleCarbonHotKey(id: registration.key, isPressed: isPressed)
         return true
+    }
+
+    /// Carbon hotkeys can stop delivering while FluidVoice remains the active app after its
+    /// last window closes. Keep this local route with the Carbon registration lifecycle rather
+    /// than a ContentView lifecycle so Command-W cannot remove the fallback.
+    private func installFocusedAppShortcutMonitor() {
+        guard self.focusedAppShortcutMonitor == nil else { return }
+        self.focusedAppShortcutMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp]) { [weak self] event in
+            guard let self else { return event }
+            let modifiers = event.modifierFlags.intersection(HotkeyShortcut.relevantModifierMask)
+            let handled = self.handleFocusedAppPrimaryShortcut(
+                keyCode: event.keyCode,
+                modifiers: modifiers,
+                isPressed: event.type == .keyDown
+            )
+            return handled ? nil : event
+        }
     }
 
     private nonisolated func cleanupEventTap() {

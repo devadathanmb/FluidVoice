@@ -706,7 +706,7 @@ struct ContentView: View {
     private func installShortcutCaptureMonitor() {
         self.removeShortcutCaptureMonitor()
         self.shortcutCaptureMonitor = NSEvent.addLocalMonitorForEvents(
-            matching: [.keyDown, .keyUp, .flagsChanged, .leftMouseDown, .rightMouseDown, .otherMouseDown]
+            matching: [.keyDown, .flagsChanged, .leftMouseDown, .rightMouseDown, .otherMouseDown]
         ) { event in
             self.handleShortcutCaptureEvent(event)
         }
@@ -725,12 +725,6 @@ struct ContentView: View {
 
         if event.type == .keyDown {
             return self.handleShortcutKeyDownEvent(event, modifiers: eventModifiers, isRecordingAnyShortcut: isRecordingAnyShortcut, recordingTarget: recordingTarget)
-        } else if event.type == .keyUp {
-            if self.hotkeyManager?.handleFocusedAppPrimaryShortcut(
-                keyCode: event.keyCode, modifiers: eventModifiers, isPressed: false
-            ) == true {
-                return nil
-            }
         } else if event.type == .flagsChanged {
             return self.handleShortcutFlagsChangedEvent(event, modifiers: eventModifiers, isRecordingAnyShortcut: isRecordingAnyShortcut, recordingTarget: recordingTarget)
         } else if event.type == .leftMouseDown || event.type == .rightMouseDown || event.type == .otherMouseDown {
@@ -750,11 +744,6 @@ struct ContentView: View {
             if self.cancelRecordingHotkeyShortcut.matches(keyCode: event.keyCode, modifiers: eventModifiers),
                self.handleCancelShortcut()
             {
-                return nil
-            }
-            if self.hotkeyManager?.handleFocusedAppPrimaryShortcut(
-                keyCode: event.keyCode, modifiers: eventModifiers, isPressed: true
-            ) == true {
                 return nil
             }
             self.shortcutRecordingMessage = nil
@@ -2354,14 +2343,8 @@ struct ContentView: View {
             )
         }
 
-        let shouldShowAIProcessingFailure = shouldPersistOutputs && aiFallbackReason != nil
-        if shouldShowAIProcessingFailure {
-            self.pendingAIReprocessText = transcribedText
-            NotchContentState.shared.showAIProcessingFailure()
-            self.menuBarManager.finishProcessingKeepingOverlayVisible()
-        } else {
-            self.pendingAIReprocessText = nil
-        }
+        let didFallBackFromAI = shouldPersistOutputs && aiFallbackReason != nil
+        self.pendingAIReprocessText = didFallBackFromAI ? transcribedText : nil
 
         let frontmostApp = NSWorkspace.shared.frontmostApplication
         let frontmostName = frontmostApp?.localizedName ?? "Unknown"
@@ -2389,11 +2372,12 @@ struct ContentView: View {
                 model: transcriptionModelInfo.model
             )
         }
-        // When FluidVoice itself is frontmost, the bound editor already receives `finalText`.
-        // Avoid re-inserting or overwriting the clipboard in that self-target case.
-        let shouldCopyToClipboard = shouldPersistOutputs &&
-            SettingsStore.shared.copyTranscriptionToClipboard &&
-            !isFluidFrontmost
+        // A failed AI pass must still leave the recognized words somewhere reliable,
+        // even when automatic clipboard copying is normally disabled or FluidVoice is frontmost.
+        let shouldCopyToClipboard = shouldPersistOutputs && (
+            didFallBackFromAI ||
+                (SettingsStore.shared.copyTranscriptionToClipboard && !isFluidFrontmost)
+        )
 
         if shouldCopyToClipboard {
             ClipboardService.copyToClipboard(finalText)
@@ -2424,12 +2408,12 @@ struct ContentView: View {
                 tracksDictionaryCorrections: true
             )
             didTypeExternally = true
-            if !shouldShowAIProcessingFailure, !didRequestOverlayHideOnStop {
+            if !didRequestOverlayHideOnStop {
                 self.hideOverlayAfterOutput()
             }
         }
 
-        if !didTypeExternally, !shouldShowAIProcessingFailure, !didRequestOverlayHideOnStop {
+        if !didTypeExternally, !didRequestOverlayHideOnStop {
             self.hideOverlayAfterOutput()
         }
     }
@@ -2863,15 +2847,10 @@ struct ContentView: View {
                 aiProcessingError: aiFallbackReason
             )
         }
-        if aiFallbackReason != nil {
-            self.pendingAIReprocessText = transcribedText
-            NotchContentState.shared.showAIProcessingFailure()
-            self.menuBarManager.finishProcessingKeepingOverlayVisible()
-        } else {
-            self.pendingAIReprocessText = nil
-        }
+        let didFallBackFromAI = aiFallbackReason != nil
+        self.pendingAIReprocessText = didFallBackFromAI ? transcribedText : nil
 
-        if SettingsStore.shared.copyTranscriptionToClipboard {
+        if SettingsStore.shared.copyTranscriptionToClipboard || didFallBackFromAI {
             ClipboardService.copyToClipboard(finalText)
         }
 
@@ -2893,9 +2872,7 @@ struct ContentView: View {
             )
         }
 
-        if aiFallbackReason == nil {
-            self.hideOverlayAfterOutput()
-        }
+        self.hideOverlayAfterOutput()
 
         self.clearActiveRecordingMode()
     }
