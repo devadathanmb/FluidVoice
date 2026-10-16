@@ -353,6 +353,7 @@ final class GlobalHotkeyManager: NSObject {
     private nonisolated let hotkeyInstanceID = UUID().uuidString
     private nonisolated(unsafe) var carbonReleaseRecoveryTask: Task<Void, Never>?
     private var asrRunningCancellable: AnyCancellable?
+    private var isPostProcessingCancellationActive = false
     private(set) var availability: GlobalHotkeyAvailability = .initializing {
         didSet { self.availabilityDidChange?(self.availability) }
     }
@@ -832,6 +833,11 @@ final class GlobalHotkeyManager: NSObject {
 
     func setCancelCallback(_ callback: @escaping () -> CancelHandlingResult) {
         self.cancelCallback = callback
+    }
+
+    func setPostProcessingCancellationActive(_ active: Bool) {
+        self.isPostProcessingCancellationActive = active
+        self.updateTransientCarbonCancelHotKey(isRecording: self.asrService.isRunning)
     }
 
     func setPasteLastTranscriptionCallback(_ callback: @escaping () -> Void) {
@@ -2408,7 +2414,7 @@ extension GlobalHotkeyManager {
         guard let shortcut = SettingsStore.shared.cancelRecordingHotkeyShortcut,
               !self.isAccessibilityTrustedProvider(),
               self.carbonEventHandler != nil,
-              isRecording,
+              isRecording || self.isPostProcessingCancellationActive,
               shortcut.carbonCancelHotKeyRegistrationMode == .whileRecording
         else {
             self.unregisterTransientCarbonCancelHotKey()

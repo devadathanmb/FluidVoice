@@ -23,7 +23,8 @@
 - Registered Carbon chords arrive in AppKit as `.systemDefined` hotkey events, not ordinary key-down/up. Keep the signature-checked native-event bridge and use the same dispatcher target for permanent and transient registrations.
 - Multiple window roots can create managers. Give each manager a distinct Carbon owner signature while retaining action-ID namespaces; return `eventNotHandledErr` for unowned events and remove the handler if registration fails. A failed newer manager must never swallow an older manager's shortcuts.
 - Local events must not depend on `NSApp.isActive`, which can lag window changes. Recover missed Carbon releases from physical state, using modifier release when raw key state is unavailable without Input Monitoring. Retain event timestamps so delayed local/Carbon duplicates cannot replay a completed press.
-- Escape is a transient Carbon registration while recording. Unregister it and clear its press state afterward so later recordings can register it again.
+- Escape is a transient Carbon registration while recording or cancellable stop/post-processing is active. Unregister it and clear its press state once both end so idle apps receive Escape normally and later recordings can register it again.
+- Escape during AI enhancement must cancel the request and release the foreground stop gates without waiting for provider acknowledgement. Invalidate previews and ignore late results; preserve raw History when enabled. Do not release ASR capture/finalization safety gates early.
 - Migrate Right Option to Control-Option-Space only for the exact old persisted default. Never replace a customized shortcut; see `CarbonPrimaryShortcutDefaultMigrated` in `SettingsStore`.
 
 ## Code Map

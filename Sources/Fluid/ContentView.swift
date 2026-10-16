@@ -86,6 +86,7 @@ final nonisolated class DictationAIStreamPreviewBuffer: @unchecked Sendable {
     private var lastPublishedText = ""
     private var nextEligibleUIUpdate: TimeInterval
     private var isUIUpdateScheduled = false
+    private var isInvalidated = false
 
     init(
         minimumUpdateInterval: TimeInterval = 0.033,
@@ -102,6 +103,7 @@ final nonisolated class DictationAIStreamPreviewBuffer: @unchecked Sendable {
     func append(_ chunk: String) {
         guard !chunk.isEmpty else { return }
         let shouldSchedule = self.lock.withLock {
+            guard !self.isInvalidated else { return false }
             self.bufferedText += chunk
             guard !self.isUIUpdateScheduled,
                   ProcessInfo.processInfo.systemUptime >= self.nextEligibleUIUpdate
@@ -124,6 +126,14 @@ final nonisolated class DictationAIStreamPreviewBuffer: @unchecked Sendable {
         self.publisher(text)
     }
 
+    func invalidate() {
+        self.lock.withLock {
+            self.isInvalidated = true
+            self.bufferedText = ""
+            self.isUIUpdateScheduled = false
+        }
+    }
+
     @MainActor
     private func publishScheduledUpdate() {
         guard let text = self.takeTextForPublishing(requiresScheduledUpdate: true) else { return }
@@ -132,6 +142,7 @@ final nonisolated class DictationAIStreamPreviewBuffer: @unchecked Sendable {
 
     private func takeTextForPublishing(requiresScheduledUpdate: Bool) -> String? {
         self.lock.withLock {
+            guard !self.isInvalidated else { return nil }
             if requiresScheduledUpdate, !self.isUIUpdateScheduled {
                 return nil
             }
@@ -295,6 +306,7 @@ struct ContentView: View {
     @State private var hotkeyManagerInitialized: Bool = false
     @State private var hotkeyAvailability: GlobalHotkeyAvailability = .initializing
     @State private var processingDictationLifecycleID: UInt64?
+    @State private var activeDictationAIRequest: CancellableDictationRequest<AITextProcessingResult>?
     @State private var pendingVoiceCommandLifecycleID: UInt64?
     @State private var cancelledOutputLifecycleID: UInt64?
     @State private var isSavingCancelledRecording = false
@@ -2715,7 +2727,7 @@ struct ContentView: View {
 
     // MARK: - Modular AI Processing
 
-    private struct AITextProcessingResult {
+    private struct AITextProcessingResult: Sendable {
         let text: String
         let tokensPerSecond: Double?
         let fluidIntelligenceLatencyMilliseconds: Int?
@@ -2751,6 +2763,7 @@ struct ContentView: View {
         benchmarkID: String? = nil,
         stopSnapshot: DictationStopSnapshot? = nil
     ) async throws -> AITextProcessingResult {
+        try Task.checkCancellation()
         guard let summaryActivity = MeetingSummaryActivityCoordinator.shared.beginProcessing() else {
             throw MeetingModelResidencyError.busy
         }
@@ -2827,6 +2840,7 @@ struct ContentView: View {
                 ),
                 streamHandler: streamHandler
             )
+            try Task.checkCancellation()
             self.appBench("ai_private_return")
             self.settings.recordFluidIntelligenceUse(output: response.outputText)
 
@@ -2963,6 +2977,7 @@ struct ContentView: View {
             do {
                 response = try await LLMClient.shared.call(config)
             } catch {
+                try Task.checkCancellation()
                 guard DictationStreamingFallbackPolicy.shouldRetryWithoutStreaming(after: error) else {
                     self.appBench("ai_streaming_fallback_skipped reason=transport_or_cancel")
                     throw error
@@ -2988,6 +3003,7 @@ struct ContentView: View {
         } else {
             response = try await LLMClient.shared.call(config)
         }
+        try Task.checkCancellation()
 
         // Log thinking if present (for debugging)
         if let thinking = response.thinking {
@@ -3030,9 +3046,11 @@ struct ContentView: View {
         guard self.processingDictationLifecycleID == nil else { return }
         let outputLifecycleID = self.overlayLifecycleID
         self.processingDictationLifecycleID = outputLifecycleID
+        self.hotkeyManager?.setPostProcessingCancellationActive(true)
         defer {
             if self.processingDictationLifecycleID == outputLifecycleID {
                 self.processingDictationLifecycleID = nil
+                self.hotkeyManager?.setPostProcessingCancellationActive(false)
             }
         }
         var closeTrace = OverlayCloseTrace("content.stopCallback")
@@ -3219,7 +3237,7 @@ struct ContentView: View {
 
         let practiceModelID = route == .onboardingSandbox && self.settings.onboardingCurrentStep == 5
             ? PrivateAIProviderPromptFormat.verifiedModelID(settings: self.settings) : nil
-        let shouldUseAI = !sendsExistingDraft && (practiceModelID != nil || (stopSnapshot?.usesAI ?? DictationAIPostProcessingGate.isConfigured(
+        let shouldUseAI = !cancelledAtASRStop && !sendsExistingDraft && (practiceModelID != nil || (stopSnapshot?.usesAI ?? DictationAIPostProcessingGate.isConfigured(
             for: activeDictationSlot ?? .primary,
             appBundleID: appInfo.bundleId
         )))
@@ -3241,28 +3259,45 @@ struct ContentView: View {
             defer { refiningStatusTask.cancel() }
 
             let streamPreview = processingFeedback.streamPreview
+            let request = CancellableDictationRequest<AITextProcessingResult>()
+            self.activeDictationAIRequest = request
+            defer {
+                streamPreview.invalidate()
+                if self.activeDictationAIRequest === request {
+                    self.activeDictationAIRequest = nil
+                }
+            }
             let streamHandler: PrivateAIStreamHandler = { chunk in
                 streamPreview.append(chunk)
             }
 
             do {
                 self.logAIProcessCall(pipelineID, postProcessingModelInfo, postProcessingInputChars)
-                let result = try await self.processTextWithAIMetrics(
-                    normalizedTranscribedText,
-                    overrideSystemPrompt: promptOverride,
-                    overrideProviderID: practiceModelID == nil ? nil : PrivateAIProviderFeature.shared.providerID,
-                    overrideModel: practiceModelID,
-                    dictationSlot: activeDictationSlot,
-                    streamHandler: streamHandler,
-                    benchmarkID: pipelineID,
-                    stopSnapshot: stopSnapshot
-                )
+                let snapshotForAI = stopSnapshot
+                let result = try await request.value {
+                    try await self.processTextWithAIMetrics(
+                        normalizedTranscribedText,
+                        overrideSystemPrompt: promptOverride,
+                        overrideProviderID: practiceModelID == nil ? nil : PrivateAIProviderFeature.shared.providerID,
+                        overrideModel: practiceModelID,
+                        dictationSlot: activeDictationSlot,
+                        streamHandler: streamHandler,
+                        benchmarkID: pipelineID,
+                        stopSnapshot: snapshotForAI
+                    )
+                }
                 refiningStatusTask.cancel()
                 finalText = result.text
                 self.appBench("ai_process_return id=\(pipelineID)")
                 aiTokensPerSecond = result.tokensPerSecond
                 streamPreview.flush()
                 self.appBench("ai_preview_flushed id=\(pipelineID)")
+            } catch where request.isCancelled || Task.isCancelled || error is CancellationError {
+                refiningStatusTask.cancel()
+                self.cancelledOutputLifecycleID = expectedOverlayLifecycleID
+                postProcessingModel = nil
+                finalText = normalizedTranscribedText
+                DebugLogger.shared.info("dictation_ai_cancelled lifecycle=\(expectedOverlayLifecycleID)", source: "HotkeyTrace")
             } catch {
                 refiningStatusTask.cancel()
                 self.appBench("ai_process_fail id=\(pipelineID)")
@@ -3352,7 +3387,8 @@ struct ContentView: View {
             aiProcessingDurationMilliseconds: aiProcessingDurationMilliseconds,
             fluidModel: AnalyticsFluidIntelligenceModel(modelID: postProcessingModel),
             tokensPerSecond: aiTokensPerSecond,
-            outcome: aiFallbackReason == nil ? "success" : "ai_fallback"
+            outcome: self.cancelledOutputLifecycleID == expectedOverlayLifecycleID
+                ? "cancelled" : (aiFallbackReason == nil ? "success" : "ai_fallback")
         )
         let finalOutputPlan = ASRService.makeDictationLiteralOutputPlan(
             for: finalText,
@@ -5224,6 +5260,7 @@ struct ContentView: View {
         if let lifecycleID = self.processingDictationLifecycleID {
             // A stop already owns the audio; suppress its pending output without stopping again.
             self.cancelledOutputLifecycleID = lifecycleID
+            self.activeDictationAIRequest?.cancel()
             handled = true
         } else if self.asr.isRunningOrStarting {
             let preservesHistory = self.settings.saveTranscriptionHistory && self.asr.isRunning && !self.asr.isDictionaryTrainingCaptureActive
