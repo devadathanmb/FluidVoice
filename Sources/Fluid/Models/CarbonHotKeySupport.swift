@@ -70,17 +70,36 @@ enum CarbonCancelHotKeyRegistrationMode: Equatable {
 
 struct CarbonHotKeyPressTracker {
     private var pressedIDs: Set<UInt32> = []
+    private var pressTimes: [UInt32: TimeInterval] = [:]
+    private var releaseTimes: [UInt32: TimeInterval] = [:]
 
-    mutating func beginPress(id: UInt32) -> Bool {
-        self.pressedIDs.insert(id).inserted
+    var activeIDs: Set<UInt32> {
+        self.pressedIDs
     }
 
-    mutating func endPress(id: UInt32) -> Bool {
-        self.pressedIDs.remove(id) != nil
+    mutating func beginPress(id: UInt32, timestamp: TimeInterval? = nil) -> Bool {
+        if let timestamp, let releasedAt = self.releaseTimes[id], timestamp <= releasedAt {
+            return false
+        }
+        guard self.pressedIDs.insert(id).inserted else { return false }
+        self.pressTimes[id] = timestamp
+        return true
+    }
+
+    mutating func endPress(id: UInt32, timestamp: TimeInterval? = nil) -> Bool {
+        if let timestamp, let pressedAt = self.pressTimes[id], timestamp < pressedAt {
+            return false
+        }
+        guard self.pressedIDs.remove(id) != nil else { return false }
+        self.pressTimes.removeValue(forKey: id)
+        self.releaseTimes[id] = timestamp
+        return true
     }
 
     mutating func cancelPress(id: UInt32) {
         self.pressedIDs.remove(id)
+        self.pressTimes.removeValue(forKey: id)
+        self.releaseTimes.removeValue(forKey: id)
     }
 
     func isPressed(id: UInt32) -> Bool {
@@ -89,5 +108,7 @@ struct CarbonHotKeyPressTracker {
 
     mutating func reset() {
         self.pressedIDs.removeAll()
+        self.pressTimes.removeAll()
+        self.releaseTimes.removeAll()
     }
 }

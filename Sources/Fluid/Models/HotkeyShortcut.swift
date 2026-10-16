@@ -311,6 +311,15 @@ extension HotkeyShortcut {
         self.carbonIneligibilityReason == nil
     }
 
+    func carbonPressIsHeld(physicalKeyState: Bool?, modifiers: NSEvent.ModifierFlags) -> Bool? {
+        if let physicalKeyState {
+            return physicalKeyState
+        }
+        let required = self.relevantModifierFlags.intersection([.command, .option, .control, .shift])
+        guard !required.isEmpty else { return nil }
+        return modifiers.intersection(required) == required
+    }
+
     var carbonCancelHotKeyRegistrationMode: CarbonCancelHotKeyRegistrationMode {
         switch self.carbonIneligibilityReason {
         case nil:

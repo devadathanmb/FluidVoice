@@ -584,6 +584,7 @@ struct ContentView: View {
                 self.refreshInputDevices()
             }
             .onDisappear {
+                DebugLogger.shared.info("content_disappeared hasManager=\(self.hotkeyManager != nil) running=\(self.asr.isRunningOrStarting)", source: "HotkeyTrace")
                 Task { await self.asr.stopWithoutTranscription() }
                 self.cancelPrewarmDictationIfNeeded()
                 // Note: Overlay lifecycle is now managed by MenuBarManager
@@ -744,6 +745,7 @@ struct ContentView: View {
     }
 
     private func handleContentAppear() {
+        DebugLogger.shared.info("content_appeared hasManager=\(self.hotkeyManager != nil)", source: "HotkeyTrace")
         self.appear = true
         self.refreshAccessibilityPermissionState()
 
@@ -3202,7 +3204,7 @@ struct ContentView: View {
         let spokenSendParse = SpokenSendParser.parseArmed(
             punctuationFormattedText,
             phrase: self.settings.spokenSendPhrase,
-            enabled: !cancelledAtASRStop && route.deliversText && self.settings.spokenSendEnabled,
+            enabled: !cancelledAtASRStop && route.deliversText && self.settings.spokenSendEnabled && AXIsProcessTrusted(),
             wasArmed: self.spokenSendArming.wasArmed
         )
         self.updateSpokenSendIndicatorForFinalParse(shouldSend: spokenSendParse.shouldSend)
@@ -3408,11 +3410,16 @@ struct ContentView: View {
                 model: transcriptionModelInfo.model
             )
         }
-        // When FluidVoice itself is frontmost, the bound editor already receives `finalText`.
-        let shouldCopyToClipboard = shouldDeliverOutputs &&
-            !sendsExistingDraft &&
-            (aiFallbackReason != nil || SettingsStore.shared.copyTranscriptionToClipboard)
-        let shouldTypeExternally = shouldDeliverOutputs && !isFluidFrontmost
+        let deliveryPolicy = DictationTextDeliveryPolicy(
+            deliversText: shouldDeliverOutputs,
+            accessibilityTrusted: AXIsProcessTrusted(),
+            isFluidFrontmost: isFluidFrontmost,
+            sendsExistingDraft: sendsExistingDraft,
+            copyPreference: SettingsStore.shared.copyTranscriptionToClipboard,
+            aiFailed: aiFallbackReason != nil
+        )
+        let shouldCopyToClipboard = shouldDeliverOutputs && deliveryPolicy.shouldCopyToClipboard
+        let shouldTypeExternally = shouldDeliverOutputs && deliveryPolicy.shouldTypeExternally
 
         // Send-only stops normally have no History row. Recover their words if
         // Escape arrives after the output decision but before delivery completes.
@@ -3595,7 +3602,7 @@ struct ContentView: View {
         }
         if !shouldTypeExternally {
             self.logPipelineCompletion(
-                outcome: outputRoute == .historyOnly ? "history_only" : (shouldPersistOutputs ? "internal_editor" : "sandbox"),
+                outcome: outputRoute == .historyOnly ? "history_only" : (shouldCopyToClipboard ? "clipboard" : (shouldPersistOutputs ? "internal_editor" : "sandbox")),
                 pipelineID: pipelineID,
                 pipelineStartedAt: pipelineStartedAt,
                 textReadyAt: finalTextReadyAt
@@ -3894,7 +3901,7 @@ struct ContentView: View {
     }
 
     private func handleSpokenSendPartialTranscription(_ text: String) {
-        guard self.settings.spokenSendEnabled else { return }
+        guard self.settings.spokenSendEnabled, AXIsProcessTrusted() else { return }
         let isDictationMode = self.activeRecordingMode == .dictate || self.activeRecordingMode == .promptMode
         let isEligible = isDictationMode &&
             self.cancelledOutputLifecycleID != self.overlayLifecycleID &&
@@ -4343,7 +4350,13 @@ struct ContentView: View {
         NotchContentState.shared.recordingTargetContext = targetContext
         NotchContentState.shared.recordingTargetPID = targetContext?.pid
 
-        let shouldTypeExternally = !isFluidFrontmost
+        let deliveryPolicy = DictationTextDeliveryPolicy(
+            deliversText: true,
+            accessibilityTrusted: AXIsProcessTrusted(),
+            isFluidFrontmost: isFluidFrontmost,
+            copyPreference: SettingsStore.shared.copyTranscriptionToClipboard
+        )
+        let shouldTypeExternally = deliveryPolicy.shouldTypeExternally
         if shouldTypeExternally {
             let typingTarget = self.resolveTypingTargetPID()
             if typingTarget.shouldRestoreOriginalFocus {
@@ -4361,7 +4374,7 @@ struct ContentView: View {
                 self.showTextDeliveryFailure(failure, transcript: finalText)
             }
         } else {
-            await PasteDeliveryCoordinator.shared.copyBackup(finalText, enabled: SettingsStore.shared.copyTranscriptionToClipboard)
+            await PasteDeliveryCoordinator.shared.copyBackup(finalText, enabled: deliveryPolicy.shouldCopyToClipboard)
         }
     }
 
@@ -4472,11 +4485,18 @@ struct ContentView: View {
 
         let frontmostApp = NSWorkspace.shared.frontmostApplication
         let isFluidFrontmost = frontmostApp?.bundleIdentifier?.contains("fluid") == true
-        let shouldKeepBackup = SettingsStore.shared.copyTranscriptionToClipboard || aiFallbackReason != nil
+        let deliveryPolicy = DictationTextDeliveryPolicy(
+            deliversText: true,
+            accessibilityTrusted: AXIsProcessTrusted(),
+            isFluidFrontmost: isFluidFrontmost && self.isTranscriptionFocused,
+            copyPreference: SettingsStore.shared.copyTranscriptionToClipboard,
+            aiFailed: aiFallbackReason != nil
+        )
+        let shouldKeepBackup = deliveryPolicy.shouldCopyToClipboard
         if shouldKeepBackup {
             ClipboardService.copyToClipboard(finalText)
         }
-        let shouldTypeExternally = !isFluidFrontmost || self.isTranscriptionFocused == false
+        let shouldTypeExternally = deliveryPolicy.shouldTypeExternally
         if shouldTypeExternally {
             let typingTarget = self.resolveTypingTargetPID()
             if typingTarget.shouldRestoreOriginalFocus {
@@ -5444,12 +5464,22 @@ extension ContentView {
     }
 
     private func canBeginDictationRecording() -> Bool {
-        guard !self.isSavingCancelledRecording, self.processingDictationLifecycleID == nil else { return false }
+        guard !self.isSavingCancelledRecording, self.processingDictationLifecycleID == nil else {
+            DebugLogger.shared.info("recording_rejected reason=output_busy savingCancelled=\(self.isSavingCancelledRecording) processing=\(self.processingDictationLifecycleID != nil)", source: "HotkeyTrace")
+            return false
+        }
         if self.canSwitchActiveDictationCaptureMode {
             return true
         }
-        guard !self.presentExclusiveActivityBlockIfNeeded() else { return false }
-        return !self.asr.isRunningOrStarting && !self.asr.isDictionaryTrainingCaptureActive
+        guard !self.presentExclusiveActivityBlockIfNeeded() else {
+            DebugLogger.shared.info("recording_rejected reason=exclusive_activity", source: "HotkeyTrace")
+            return false
+        }
+        let canStart = !self.asr.isRunningOrStarting && !self.asr.isDictionaryTrainingCaptureActive
+        if !canStart {
+            DebugLogger.shared.info("recording_rejected reason=capture_busy running=\(self.asr.isRunningOrStarting) dictionary=\(self.asr.isDictionaryTrainingCaptureActive)", source: "HotkeyTrace")
+        }
+        return canStart
     }
 
     private func beginDictationRecording(
@@ -5458,6 +5488,7 @@ extension ContentView {
         startMethod: AnalyticsOnboardingTryoutStartMethod = .hotkey
     ) -> Task<Void, Never>? {
         guard self.canBeginDictationRecording() else { return nil }
+        DebugLogger.shared.info("recording_accepted slot=\(slot.rawValue) mode=\(mode.rawValue)", source: "HotkeyTrace")
         let switchesOwnedCapture = self.canSwitchActiveDictationCaptureMode
         let previousMode = self.activeRecordingMode
         DebugLogger.shared.debug("Begin dictation recording for slot \(slot.rawValue)", source: "ContentView")

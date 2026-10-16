@@ -30,12 +30,16 @@ enum GlobalHotkeyAvailability: Equatable {
 
 private nonisolated(unsafe) let carbonHotKeySignature: OSType = 0x464c5643 // "FLVC"
 
-private nonisolated func carbonHotKeyEventHandler(
-    _: EventHandlerCallRef?,
-    event: EventRef?,
-    userData: UnsafeMutableRawPointer?
-) -> OSStatus {
-    guard let event, let userData else { return OSStatus(eventNotHandledErr) }
+private nonisolated struct CarbonHotKeyInput {
+    let id: UInt32
+    let isPressed: Bool
+    let timestamp: TimeInterval
+}
+
+private nonisolated func decodeCarbonHotKeyInput(_ event: EventRef, signature: OSType) -> CarbonHotKeyInput? {
+    guard GetEventClass(event) == OSType(kEventClassKeyboard) else { return nil }
+    let kind = GetEventKind(event)
+    guard kind == UInt32(kEventHotKeyPressed) || kind == UInt32(kEventHotKeyReleased) else { return nil }
     var hotKeyID = EventHotKeyID()
     let status = GetEventParameter(
         event,
@@ -46,15 +50,20 @@ private nonisolated func carbonHotKeyEventHandler(
         nil,
         &hotKeyID
     )
-    guard status == noErr else { return status }
-    guard hotKeyID.signature == carbonHotKeySignature else { return OSStatus(eventNotHandledErr) }
+    guard status == noErr, hotKeyID.signature == signature else { return nil }
+    return CarbonHotKeyInput(id: hotKeyID.id, isPressed: kind == UInt32(kEventHotKeyPressed), timestamp: GetEventTime(event))
+}
 
+private nonisolated func carbonHotKeyEventHandler(
+    _: EventHandlerCallRef?,
+    event: EventRef?,
+    userData: UnsafeMutableRawPointer?
+) -> OSStatus {
+    guard let event, let userData else { return OSStatus(eventNotHandledErr) }
     let manager = Unmanaged<GlobalHotkeyManager>.fromOpaque(userData).takeUnretainedValue()
-    let isPressed = GetEventKind(event) == UInt32(kEventHotKeyPressed)
-    MainActor.assumeIsolated {
-        manager.handleCarbonHotKey(id: hotKeyID.id, isPressed: isPressed)
+    return MainActor.assumeIsolated {
+        manager.handleNativeCarbonHotKeyEvent(event)
     }
-    return noErr
 }
 
 nonisolated enum HotkeyHoldModeType: Hashable {
@@ -318,6 +327,14 @@ private final nonisolated class HotkeyState: @unchecked Sendable {
 
 @MainActor
 final class GlobalHotkeyManager: NSObject {
+    private static var nextCarbonSignature: OSType = carbonHotKeySignature
+
+    private static func allocateCarbonSignature() -> OSType {
+        defer { self.nextCarbonSignature &+= 1 }
+        return self.nextCarbonSignature
+    }
+
+    nonisolated let carbonEventSignature: OSType
     enum CancelHandlingResult {
         case unhandled
         case dismissedOverlay
@@ -333,6 +350,8 @@ final class GlobalHotkeyManager: NSObject {
     private nonisolated(unsafe) var carbonActions: [UInt32: (action: CarbonHotKeyAction, shortcut: HotkeyShortcut)] = [:]
     private nonisolated(unsafe) var focusedAppShortcutMonitor: Any?
     private var carbonPressTracker = CarbonHotKeyPressTracker()
+    private nonisolated let hotkeyInstanceID = UUID().uuidString
+    private nonisolated(unsafe) var carbonReleaseRecoveryTask: Task<Void, Never>?
     private var asrRunningCancellable: AnyCancellable?
     private(set) var availability: GlobalHotkeyAvailability = .initializing {
         didSet { self.availabilityDidChange?(self.availability) }
@@ -375,6 +394,8 @@ final class GlobalHotkeyManager: NSObject {
     private var isShortcutCaptureActiveProvider: (() -> Bool)?
     private var shortcutCaptureHandler: ((NSEvent) -> NSEvent?)?
     private let isSessionLockedProvider: () -> Bool
+    private let isAccessibilityTrustedProvider: () -> Bool
+    private let isCarbonShortcutPressedProvider: @MainActor (HotkeyShortcut) -> Bool?
     private var cancelCallback: (() -> CancelHandlingResult)?
     private var pasteLastTranscriptionCallback: (() -> Void)?
     private var hotkeyMode: HotkeyActivationMode = SettingsStore.shared.hotkeyMode
@@ -617,7 +638,10 @@ final class GlobalHotkeyManager: NSObject {
         isRewriteRecordingProvider: (() -> Bool)? = nil,
         isShortcutCaptureActiveProvider: (() -> Bool)? = nil,
         shortcutCaptureHandler: ((NSEvent) -> NSEvent?)? = nil,
-        isSessionLockedProvider: @escaping () -> Bool = { GlobalHotkeyManager.currentSessionIsLocked() }
+        isSessionLockedProvider: @escaping () -> Bool = { GlobalHotkeyManager.currentSessionIsLocked() },
+        isAccessibilityTrustedProvider: @escaping () -> Bool = { AXIsProcessTrusted() },
+        isCarbonShortcutPressedProvider: @escaping @MainActor (HotkeyShortcut) -> Bool? = { GlobalHotkeyManager.carbonShortcutIsPressed($0) },
+        automaticallyInitialize: Bool = true
     ) {
         self.asrService = asrService
         self.primaryShortcuts = primaryShortcuts
@@ -642,7 +666,11 @@ final class GlobalHotkeyManager: NSObject {
         self.isShortcutCaptureActiveProvider = isShortcutCaptureActiveProvider
         self.shortcutCaptureHandler = shortcutCaptureHandler
         self.isSessionLockedProvider = isSessionLockedProvider
+        self.isAccessibilityTrustedProvider = isAccessibilityTrustedProvider
+        self.isCarbonShortcutPressedProvider = isCarbonShortcutPressedProvider
+        self.carbonEventSignature = Self.allocateCarbonSignature()
         super.init()
+        DebugLogger.shared.info("manager_created instance=\(self.hotkeyInstanceID)", source: "HotkeyTrace")
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(self.holdSpaceSettingChanged),
@@ -655,7 +683,9 @@ final class GlobalHotkeyManager: NSObject {
             .sink { [weak self] isRunning in
                 self?.updateTransientCarbonCancelHotKey(isRecording: isRunning)
             }
-        self.initializeWithDelay()
+        if automaticallyInitialize {
+            self.initializeWithDelay()
+        }
     }
 
     private func initializeWithDelay() {
@@ -847,7 +877,7 @@ final class GlobalHotkeyManager: NSObject {
         self.carbonPressTracker.reset()
         self.cleanupCarbonHotKeys()
 
-        if !AXIsProcessTrusted() {
+        if !self.isAccessibilityTrustedProvider() {
             return self.setupCarbonHotKeys()
         }
 
@@ -2092,7 +2122,7 @@ final class GlobalHotkeyManager: NSObject {
             return false
         }
         guard !self.isProcessingStop else {
-            DebugLogger.shared.debug("CLOSE_DETAIL shortcutRejected stopLocked=true uptime=\(ProcessInfo.processInfo.systemUptime)", source: "StopTiming")
+            DebugLogger.shared.info("shortcut_rejected instance=\(self.hotkeyInstanceID) reason=stop_processing action=\(label)", source: "HotkeyTrace")
             return false
         }
         guard !self.asrService.isDictionaryTrainingCaptureActive else {
@@ -2271,6 +2301,7 @@ final class GlobalHotkeyManager: NSObject {
     }
 
     deinit {
+        DebugLogger.shared.info("manager_destroyed instance=\(hotkeyInstanceID)", source: "HotkeyTrace")
         initializationTask?.cancel()
         retryTask?.cancel()
         healthCheckTask?.cancel()
@@ -2288,7 +2319,7 @@ extension GlobalHotkeyManager {
             EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyReleased)),
         ]
         let handlerStatus = InstallEventHandler(
-            GetApplicationEventTarget(),
+            GetEventDispatcherTarget(),
             carbonHotKeyEventHandler,
             eventTypes.count,
             &eventTypes,
@@ -2327,18 +2358,18 @@ extension GlobalHotkeyManager {
         var primaryRegisteredCount = 0
         for registration in plan.registrations {
             var hotKeyRef: EventHotKeyRef?
-            let hotKeyID = EventHotKeyID(signature: carbonHotKeySignature, id: registration.action.id)
+            let hotKeyID = EventHotKeyID(signature: self.carbonEventSignature, id: registration.action.id)
             let status = RegisterEventHotKey(
                 UInt32(registration.shortcut.keyCode),
                 registration.shortcut.carbonModifierFlags,
                 hotKeyID,
-                GetApplicationEventTarget(),
+                GetEventDispatcherTarget(),
                 UInt32(kEventHotKeyExclusive),
                 &hotKeyRef
             )
             if status == noErr, let hotKeyRef {
                 self.carbonHotKeys.append(hotKeyRef)
-                self.carbonActions[registration.action.id] = (registration.action, registration.shortcut)
+                self.trackCarbonRegistration(registration)
                 if registration.action.isPrimary {
                     primaryRegisteredCount += 1
                 }
@@ -2354,7 +2385,11 @@ extension GlobalHotkeyManager {
         let registeredCount = self.carbonHotKeys.count + (self.transientCarbonCancelHotKey == nil ? 0 : 1)
         if registeredCount == 0 {
             let reason = issues.first ?? "Configure a keyboard shortcut containing Command, Option, Control, or Shift."
+            // A failed registration must not leave a newer handler in front of
+            // another window's working manager on Carbon's handler chain.
+            self.cleanupCarbonHotKeys()
             self.availability = .unavailable(reason: reason)
+            DebugLogger.shared.info("carbon_setup_failed instance=\(self.hotkeyInstanceID) reason=\(reason)", source: "HotkeyTrace")
             return false
         }
         self.installFocusedAppShortcutMonitor()
@@ -2364,13 +2399,14 @@ extension GlobalHotkeyManager {
             primaryRegisteredCount: primaryRegisteredCount,
             issues: issues
         )
+        DebugLogger.shared.info("carbon_registered instance=\(self.hotkeyInstanceID) total=\(registeredCount) primary=\(primaryRegisteredCount) target=dispatcher issues=\(issues)", source: "HotkeyTrace")
         DebugLogger.shared.info("Registered \(registeredCount) Carbon keyboard shortcuts", source: "GlobalHotkeyManager")
         return true
     }
 
     private func updateTransientCarbonCancelHotKey(isRecording: Bool) {
         guard let shortcut = SettingsStore.shared.cancelRecordingHotkeyShortcut,
-              !AXIsProcessTrusted(),
+              !self.isAccessibilityTrustedProvider(),
               self.carbonEventHandler != nil,
               isRecording,
               shortcut.carbonCancelHotKeyRegistrationMode == .whileRecording
@@ -2381,12 +2417,12 @@ extension GlobalHotkeyManager {
         guard self.transientCarbonCancelHotKey == nil else { return }
 
         var hotKeyRef: EventHotKeyRef?
-        let hotKeyID = EventHotKeyID(signature: carbonHotKeySignature, id: CarbonHotKeyAction.cancel.id)
+        let hotKeyID = EventHotKeyID(signature: self.carbonEventSignature, id: CarbonHotKeyAction.cancel.id)
         let status = RegisterEventHotKey(
             UInt32(shortcut.keyCode),
             shortcut.carbonModifierFlags,
             hotKeyID,
-            GetApplicationEventTarget(),
+            GetEventDispatcherTarget(),
             UInt32(kEventHotKeyExclusive),
             &hotKeyRef
         )
@@ -2413,7 +2449,7 @@ extension GlobalHotkeyManager {
     }
 
     private func refreshCarbonRegistrationsIfNeeded() {
-        guard !AXIsProcessTrusted(), self.carbonEventHandler != nil || self.isInitialized else { return }
+        guard !self.isAccessibilityTrustedProvider(), self.carbonEventHandler != nil || self.isInitialized else { return }
         self.availability = .initializing
         self.resetModifierOnlyShortcutTracking(reason: .reinitialize)
         self.cleanupCarbonHotKeys()
@@ -2425,6 +2461,8 @@ extension GlobalHotkeyManager {
     }
 
     private nonisolated func cleanupCarbonHotKeys() {
+        self.carbonReleaseRecoveryTask?.cancel()
+        self.carbonReleaseRecoveryTask = nil
         if let monitor = self.focusedAppShortcutMonitor {
             NSEvent.removeMonitor(monitor)
             self.focusedAppShortcutMonitor = nil
@@ -2444,17 +2482,30 @@ extension GlobalHotkeyManager {
         }
     }
 
-    func handleCarbonHotKey(id: UInt32, isPressed: Bool) {
-        guard let registration = self.carbonActions[id] else { return }
-        guard !isPressed || !self.isSessionLockedProvider() else { return }
+    func handleCarbonHotKey(id: UInt32, isPressed: Bool, timestamp: TimeInterval? = nil, source: String = "carbon") {
+        guard let registration = self.carbonActions[id] else {
+            DebugLogger.shared.info("carbon_rejected instance=\(self.hotkeyInstanceID) reason=unknown_registration id=\(id) route=\(source)", source: "HotkeyTrace")
+            return
+        }
+        DebugLogger.shared.info(
+            "carbon_input instance=\(self.hotkeyInstanceID) action=\(registration.action) down=\(isPressed) route=\(source) active=\(NSApp.isActive) " +
+                "mode=\(self.hotkeyMode.rawValue) tracked=\(self.carbonPressTracker.isPressed(id: id)) stopBusy=\(self.isProcessingStop) asrRunning=\(self.asrService.isRunningOrStarting)",
+            source: "HotkeyTrace"
+        )
+        guard !isPressed || !self.isSessionLockedProvider() else {
+            DebugLogger.shared.info("carbon_rejected instance=\(self.hotkeyInstanceID) reason=screen_locked", source: "HotkeyTrace")
+            return
+        }
         guard !(self.isShortcutCaptureActiveProvider?() ?? false) else {
+            DebugLogger.shared.info("carbon_rejected instance=\(self.hotkeyInstanceID) reason=shortcut_capture", source: "HotkeyTrace")
             self.carbonPressTracker.reset()
             return
         }
         if isPressed {
-            guard self.carbonPressTracker.beginPress(id: id) else { return }
+            guard self.carbonPressTracker.beginPress(id: id, timestamp: timestamp ?? ProcessInfo.processInfo.systemUptime) else { return }
+            self.startCarbonReleaseRecoveryIfNeeded()
         } else {
-            guard self.carbonPressTracker.endPress(id: id) else { return }
+            guard self.carbonPressTracker.endPress(id: id, timestamp: timestamp ?? ProcessInfo.processInfo.systemUptime) else { return }
         }
 
         DebugLogger.shared.debug(
@@ -2517,8 +2568,10 @@ extension GlobalHotkeyManager {
 
     /// Route a key event from FluidVoice's own window through Carbon's press tracker.
     /// If Carbon also delivers the event, the tracker prevents a duplicate action.
-    func handleFocusedAppPrimaryShortcut(keyCode: UInt16, modifiers: NSEvent.ModifierFlags, isPressed: Bool) -> Bool {
-        guard !AXIsProcessTrusted(), NSApp.isActive,
+    func handleFocusedAppPrimaryShortcut(keyCode: UInt16, modifiers: NSEvent.ModifierFlags, isPressed: Bool, timestamp: TimeInterval? = nil) -> Bool {
+        // The local monitor already scopes events to this process. Activation can
+        // lag behind window closure/reopening, especially with a hidden Dock icon.
+        guard !self.isAccessibilityTrustedProvider(),
               !(self.isShortcutCaptureActiveProvider?() ?? false) else { return false }
 
         let registration = self.carbonActions.first { id, value in
@@ -2528,7 +2581,7 @@ extension GlobalHotkeyManager {
                 : self.carbonPressTracker.isPressed(id: id)
         }
         guard let registration else { return false }
-        self.handleCarbonHotKey(id: registration.key, isPressed: isPressed)
+        self.handleCarbonHotKey(id: registration.key, isPressed: isPressed, timestamp: timestamp, source: "appkit-key")
         return true
     }
 
@@ -2537,15 +2590,84 @@ extension GlobalHotkeyManager {
     /// than a ContentView lifecycle so Command-W cannot remove the fallback.
     private func installFocusedAppShortcutMonitor() {
         guard self.focusedAppShortcutMonitor == nil else { return }
-        self.focusedAppShortcutMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp]) { [weak self] event in
+        self.focusedAppShortcutMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp, .systemDefined]) { [weak self] event in
             guard let self else { return event }
+            if self.handleAppKitCarbonHotKey(event) {
+                return nil
+            }
             let modifiers = event.modifierFlags.intersection(HotkeyShortcut.relevantModifierMask)
             let handled = self.handleFocusedAppPrimaryShortcut(
                 keyCode: event.keyCode,
                 modifiers: modifiers,
-                isPressed: event.type == .keyDown
+                isPressed: event.type == .keyDown,
+                timestamp: event.timestamp
             )
             return handled ? nil : event
+        }
+    }
+
+    func handleAppKitCarbonHotKey(_ event: NSEvent) -> Bool {
+        // Registered Carbon chords arrive in AppKit as system-defined events,
+        // not keyDown/keyUp. Handle our own events before Cocoa responder routing.
+        guard event.type == .systemDefined, let rawEvent = event.eventRef else { return false }
+        return self.handleAppKitCarbonEvent(OpaquePointer(rawEvent))
+    }
+
+    func handleAppKitCarbonEvent(_ event: EventRef) -> Bool {
+        guard !self.isAccessibilityTrustedProvider(),
+              let input = decodeCarbonHotKeyInput(event, signature: self.carbonEventSignature),
+              self.carbonActions[input.id] != nil else { return false }
+        self.handleCarbonHotKey(id: input.id, isPressed: input.isPressed, timestamp: input.timestamp, source: "appkit-carbon")
+        return true
+    }
+
+    func handleNativeCarbonHotKeyEvent(_ event: EventRef) -> OSStatus {
+        guard let input = decodeCarbonHotKeyInput(event, signature: self.carbonEventSignature),
+              self.carbonActions[input.id] != nil else { return OSStatus(eventNotHandledErr) }
+        self.handleCarbonHotKey(id: input.id, isPressed: input.isPressed, timestamp: input.timestamp)
+        return noErr
+    }
+
+    func trackCarbonRegistration(_ registration: CarbonHotKeyRegistrationCandidate) {
+        self.carbonActions[registration.action.id] = (registration.action, registration.shortcut)
+    }
+
+    func recoverReleasedCarbonHotKeys() {
+        for id in self.carbonPressTracker.activeIDs {
+            guard let registration = self.carbonActions[id],
+                  self.isCarbonShortcutPressedProvider(registration.shortcut) == false else { continue }
+            DebugLogger.shared.debug("Recovering missed Carbon release for \(registration.action)", source: "GlobalHotkeyManager")
+            self.handleCarbonHotKey(id: id, isPressed: false, source: "release-recovery")
+        }
+    }
+
+    private static func carbonShortcutIsPressed(_ shortcut: HotkeyShortcut) -> Bool? {
+        // Non-modifier key state may be reported as false without Input Monitoring.
+        // Eligible Carbon chords always have modifiers, whose release is observable
+        // without asking for an additional permission.
+        let canReadKeys = AXIsProcessTrusted() || CGPreflightListenEventAccess()
+        let keyState = canReadKeys
+            ? CGEventSource.keyState(.combinedSessionState, key: CGKeyCode(shortcut.keyCode)) : nil
+        return shortcut.carbonPressIsHeld(
+            physicalKeyState: keyState,
+            modifiers: Self.modifierFlags(from: CGEventSource.flagsState(.combinedSessionState))
+        )
+    }
+
+    private func startCarbonReleaseRecoveryIfNeeded() {
+        guard self.carbonReleaseRecoveryTask == nil else { return }
+        self.carbonReleaseRecoveryTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .milliseconds(30)) } catch { return }
+                guard let self else { return }
+                // AppKit can omit a release while focus/windows change. Toggle mode now
+                // acts on release, so recover it through the same coalescing path.
+                self.recoverReleasedCarbonHotKeys()
+                if self.carbonPressTracker.activeIDs.isEmpty {
+                    self.carbonReleaseRecoveryTask = nil
+                    return
+                }
+            }
         }
     }
 }

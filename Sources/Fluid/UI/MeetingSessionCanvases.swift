@@ -523,7 +523,11 @@ struct MeetingResultCanvas: View {
         .onDisappear { self.playback.stop() }
         .onChange(of: self.session.id) { _, _ in self.playback.stop() }
         .onChange(of: self.session.retention.audioDeletedAt) { _, _ in self.playback.stop() }
-        .onChange(of: self.isQuiescent) { _, value in if !value { self.playback.stop() } }
+        .onChange(of: self.isQuiescent) { _, value in
+            if !value {
+                self.playback.stop()
+            }
+        }
         .onChange(of: self.documentSection) { _, _ in self.playback.stop() }
         .onChange(of: self.showsProbableEchoes) { _, _ in self.playback.stop() }
         .task(id: self.copyRevision) {

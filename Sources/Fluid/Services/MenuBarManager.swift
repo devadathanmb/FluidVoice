@@ -498,6 +498,7 @@ final class MenuBarManager: NSObject, ObservableObject, NSMenuDelegate {
     }
 
     func showRecordingOverlayImmediately() {
+        DebugLogger.shared.info("recording_overlay_requested", source: "HotkeyTrace")
         AutomaticDictionaryCorrectionTracker.shared.cancel()
 
         guard let asrService else {

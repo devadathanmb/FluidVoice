@@ -6,6 +6,7 @@
 - Without AX, Carbon supports eligible modified keyboard chords only. Mouse, Fn, and modifier-only shortcuts remain unavailable.
 - AX is still required for cross-app text selection, focus capture/restoration, typing, and paste insertion. `TypingService` and `TextSelectionService` must stop when `AXIsProcessTrusted()` is false.
 - Clipboard copying is independent of AX and uses `NSPasteboard` through `ClipboardService`. `Copy to Clipboard` is the no-AX handoff; it does not insert text into another app.
+- Without AX, completed dictation uses clipboard-only delivery, not a failed paste attempt or an Accessibility warning. Keep sandbox/history-only output free of clipboard side effects, and do not arm Spoken Send without AX.
 
 ## Upstream Integration
 
@@ -19,6 +20,9 @@
 - Trusted AX uses the CG event tap; untrusted AX uses Carbon. Never register the same action through both paths.
 - Preserve Carbon action-ID namespaces, duplicate-candidate reporting, and press coalescing in `Sources/Fluid/Models/CarbonHotKeySupport.swift`.
 - When FluidVoice is active without AX, local key-down and key-up events must route through `handleFocusedAppPrimaryShortcut`. The local and Carbon paths share press tracking to prevent missed or duplicate triggers.
+- Registered Carbon chords arrive in AppKit as `.systemDefined` hotkey events, not ordinary key-down/up. Keep the signature-checked native-event bridge and use the same dispatcher target for permanent and transient registrations.
+- Multiple window roots can create managers. Give each manager a distinct Carbon owner signature while retaining action-ID namespaces; return `eventNotHandledErr` for unowned events and remove the handler if registration fails. A failed newer manager must never swallow an older manager's shortcuts.
+- Local events must not depend on `NSApp.isActive`, which can lag window changes. Recover missed Carbon releases from physical state, using modifier release when raw key state is unavailable without Input Monitoring. Retain event timestamps so delayed local/Carbon duplicates cannot replay a completed press.
 - Escape is a transient Carbon registration while recording. Unregister it and clear its press state afterward so later recordings can register it again.
 - Migrate Right Option to Control-Option-Space only for the exact old persisted default. Never replace a customized shortcut; see `CarbonPrimaryShortcutDefaultMigrated` in `SettingsStore`.
 

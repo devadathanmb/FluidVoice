@@ -173,7 +173,11 @@ struct DictionaryAudioInspectionView: View {
             self.adjustedScores = scores
             self.comparing = false
         }
-        .onChange(of: self.recordingBusy) { _, busy in if busy { self.playback.stop() } }
+        .onChange(of: self.recordingBusy) { _, busy in
+            if busy {
+                self.playback.stop()
+            }
+        }
         .onDisappear { self.playback.stop() }
     }
 
