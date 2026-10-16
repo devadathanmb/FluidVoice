@@ -764,7 +764,7 @@ final class DirectAudioReliabilityTests: XCTestCase {
         XCTAssertTrue(routingSection.contains("acceptsResult(for: sessionID)"))
         let promptTestSection = try XCTUnwrap(
             source.components(separatedBy: "private func processDictationPromptTest(").last?
-                .components(separatedBy: "private func makeAIProcessingFeedback(").first
+                .components(separatedBy: "private func routePromptTestResult(").first
         )
         let feedbackIndex = try XCTUnwrap(promptTestSection.range(of:
             "let refiningStatusTask = self.makeAIProcessingFeedback(lifecycleID: lifecycleID).statusTask"
@@ -779,9 +779,8 @@ final class DirectAudioReliabilityTests: XCTestCase {
         XCTAssertTrue(cleanup.contains("refiningStatusTask.cancel()"))
         XCTAssertTrue(cleanup.contains("promptTest.isProcessing = false"))
         // Both missing-provider and success/error cleanup must leave a newer overlay alone.
-        let scopedHide = "if self.overlayLifecycleID == lifecycleID {\n" +
-            "                self.menuBarManager.setProcessing(false)\n            }"
-        XCTAssertEqual(promptTestSection.components(separatedBy: scopedHide).count - 1, 2)
+        let scopedHide = "ifself.overlayLifecycleID==lifecycleID{self.menuBarManager.setProcessing(false)}"
+        XCTAssertEqual(promptTestSection.filter { !$0.isWhitespace }.components(separatedBy: scopedHide).count - 1, 2)
         XCTAssertFalse(promptTestSection.contains("setProcessing(true)"), "Fast prompt tests must keep delayed feedback")
         XCTAssertFalse(promptTestSection.contains("typeOutput"))
         XCTAssertFalse(promptTestSection.contains("ClipboardService"))
@@ -961,7 +960,7 @@ final class DirectAudioReliabilityTests: XCTestCase {
         XCTAssertFalse(callback.contains("clearActiveRecordingMode()"), "Keep the selected style until the History pipeline snapshots it")
         let cancel = try XCTUnwrap(source.components(separatedBy: "private func handleCancelShortcutResult() -> GlobalHotkeyManager.CancelHandlingResult {").last?
             .components(separatedBy: "// MARK: - Model Management Helpers").first)
-        XCTAssertTrue(cancel.contains("if self.isSavingCancelledRecording { return .cancelled }"))
+        XCTAssertTrue(cancel.filter { !$0.isWhitespace }.contains("ifself.isSavingCancelledRecording{return.cancelled}"))
         XCTAssertTrue(cancel.contains("DictionaryCorrectionOverlayController.shared.dismiss()\n            return .dismissedOverlay"))
         XCTAssertTrue(cancel.contains("self.settings.saveTranscriptionHistory"))
         XCTAssertTrue(cancel.contains("!self.asr.isDictionaryTrainingCaptureActive"))
@@ -991,7 +990,7 @@ final class DirectAudioReliabilityTests: XCTestCase {
         let edit = try XCTUnwrap(source.components(separatedBy: "private func processRewriteWithVoiceInstruction(").last?.components(separatedBy: "private func setActiveRecordingMode(").first)
         XCTAssertTrue(edit.contains("self.cancelledOutputLifecycleID != lifecycleID"))
         XCTAssertEqual(edit.components(separatedBy: "isOutputValid: isOutputValid").count - 1, 2)
-        XCTAssertTrue(edit.contains("if !isOutputValid() { self.rewriteModeService.clearState() }"))
+        XCTAssertTrue(edit.filter { !$0.isWhitespace }.contains("if!isOutputValid(){self.rewriteModeService.clearState()}"))
         XCTAssertTrue(edit.contains("await self.rewriteModeService.processRewriteRequest(instruction)\n        guard isOutputValid() else { return }"))
         let command = try XCTUnwrap(source.components(separatedBy: "private func processCommandWithVoice(").last?.components(separatedBy: "/// Capture app context").first)
         XCTAssertTrue(command.contains("processUserCommand(command, notifyInvalidRequest: true, isOutputValid: isOutputValid)"))
