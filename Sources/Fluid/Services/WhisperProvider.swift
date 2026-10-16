@@ -25,13 +25,20 @@ final class WhisperProvider: TranscriptionProvider {
 
     private let overriddenModelDirectory: URL?
     private let urlSession: URLSession
+    private let languageCodeOverride: String?
 
     var modelOverride: SettingsStore.SpeechModel?
 
-    init(modelDirectory: URL? = nil, urlSession: URLSession = .shared, modelOverride: SettingsStore.SpeechModel? = nil) {
+    init(
+        modelDirectory: URL? = nil,
+        urlSession: URLSession = .shared,
+        modelOverride: SettingsStore.SpeechModel? = nil,
+        languageCodeOverride: String? = nil
+    ) {
         self.overriddenModelDirectory = modelDirectory
         self.urlSession = urlSession
         self.modelOverride = modelOverride
+        self.languageCodeOverride = languageCodeOverride
     }
 
     deinit {
@@ -292,6 +299,10 @@ final class WhisperProvider: TranscriptionProvider {
     }
 
     func transcribe(_ samples: [Float]) async throws -> ASRTranscriptionResult {
+        try await self.transcribe(samples, languageCode: nil)
+    }
+
+    func transcribe(_ samples: [Float], languageCode: String?) async throws -> ASRTranscriptionResult {
         let minSamples = 16_000
         guard samples.count >= minSamples else {
             throw NSError(
@@ -309,12 +320,19 @@ final class WhisperProvider: TranscriptionProvider {
             )
         }
 
+        let resolvedLanguageCode = languageCode
+            ?? self.languageCodeOverride
+            ?? SettingsStore.shared.selectedWhisperLanguageCode
         let transcript = try await session.run(
             samples,
-            options: RunOptions(timestamps: .segment)
+            options: Self.runOptions(languageCode: resolvedLanguageCode)
         )
         let fullText = transcript.text.trimmingCharacters(in: .whitespacesAndNewlines)
         return ASRTranscriptionResult(text: fullText, confidence: 1.0)
+    }
+
+    static func runOptions(languageCode: String?) -> RunOptions {
+        RunOptions(timestamps: .segment, language: languageCode)
     }
 
     func modelsExistOnDisk() -> Bool {
@@ -323,21 +341,19 @@ final class WhisperProvider: TranscriptionProvider {
 
     func clearCache() async throws {
         self.unloadModel()
-
-        if FileManager.default.fileExists(atPath: self.modelURL.path) {
-            try FileManager.default.removeItem(at: self.modelURL)
-        }
-        if let legacyModelURL, FileManager.default.fileExists(atPath: legacyModelURL.path) {
-            try FileManager.default.removeItem(at: legacyModelURL)
-        }
-        self.removeLegacyModelIfNeeded()
-
-        if FileManager.default.fileExists(atPath: self.modelDirectory.path) {
-            let contents = try FileManager.default.contentsOfDirectory(atPath: self.modelDirectory.path)
-            if contents.isEmpty {
-                try FileManager.default.removeItem(at: self.modelDirectory)
+        let files = [self.modelURL, self.legacyModelURL].compactMap { $0 }
+        let directory = self.modelDirectory
+        try await Task.detached(priority: .userInitiated) {
+            let manager = FileManager.default
+            for file in files where manager.fileExists(atPath: file.path) {
+                try manager.removeItem(at: file)
             }
-        }
+            if manager.fileExists(atPath: directory.path),
+               try manager.contentsOfDirectory(atPath: directory.path).isEmpty
+            {
+                try manager.removeItem(at: directory)
+            }
+        }.value
     }
 
     private func downloadModel(progressHandler: ((Double) -> Void)?) async throws {

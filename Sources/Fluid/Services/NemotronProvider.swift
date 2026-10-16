@@ -38,7 +38,7 @@ final class NemotronProvider: TranscriptionProvider {
 
     private let repositoryOwner = "BarathwajAnandan"
     private let repositoryRevision = "main"
-    static let requiredFiles = [
+    nonisolated static let requiredFiles = [
         "metadata.json",
         "preprocessor.mlpackage",
         "encoder.mlpackage",
@@ -79,7 +79,7 @@ final class NemotronProvider: TranscriptionProvider {
         return Self.artifactsAreComplete(at: dir)
     }
 
-    static func artifactsAreComplete(at directory: URL) -> Bool {
+    nonisolated static func artifactsAreComplete(at directory: URL) -> Bool {
         guard HuggingFaceModelDownloader.artifactsAreComplete(
             root: directory,
             items: self.requiredFiles.map {
@@ -331,15 +331,17 @@ final class NemotronProvider: TranscriptionProvider {
         if let manager = self.manager {
             await self.stopComponentProfilingIfNeeded(on: manager)
         }
-        if let dir = self.cacheDirectory {
-            if FileManager.default.fileExists(atPath: dir.path) {
-                try FileManager.default.removeItem(at: dir)
-            }
-        }
         self.manager = nil
         self.isReady = false
         self.streamedSampleCount = 0
         self.activeLanguageCode = nil
+        if let directory = self.cacheDirectory {
+            try await Task.detached(priority: .userInitiated) {
+                if FileManager.default.fileExists(atPath: directory.path) {
+                    try FileManager.default.removeItem(at: directory)
+                }
+            }.value
+        }
     }
 
     private func transcribeBatched(_ samples: [Float]) async throws -> ASRTranscriptionResult {

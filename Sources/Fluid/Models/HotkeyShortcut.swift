@@ -73,11 +73,21 @@ struct HotkeyShortcut: Codable, Equatable {
 
     private static func modifierDisplayParts(for flags: NSEvent.ModifierFlags) -> [String] {
         var parts: [String] = []
-        if flags.contains(.function) { parts.append("🌐") }
-        if flags.contains(.command) { parts.append("⌘") }
-        if flags.contains(.option) { parts.append("⌥") }
-        if flags.contains(.control) { parts.append("⌃") }
-        if flags.contains(.shift) { parts.append("⇧") }
+        if flags.contains(.function) {
+            parts.append("🌐")
+        }
+        if flags.contains(.command) {
+            parts.append("⌘")
+        }
+        if flags.contains(.option) {
+            parts.append("⌥")
+        }
+        if flags.contains(.control) {
+            parts.append("⌃")
+        }
+        if flags.contains(.shift) {
+            parts.append("⇧")
+        }
         return parts
     }
 
@@ -223,7 +233,9 @@ extension HotkeyShortcut {
     var normalizedModifierKeyCodes: [UInt16] {
         guard !self.isMouseShortcut else { return [] }
         let normalized = Self.normalizedModifierKeyCodes(from: self.modifierKeyCodes)
-        if !normalized.isEmpty { return normalized }
+        if !normalized.isEmpty {
+            return normalized
+        }
 
         if self.modifierTriggerFlag != nil, self.relevantModifierFlags.isEmpty {
             return [self.keyCode]
@@ -280,9 +292,15 @@ extension HotkeyShortcut {
     }
 
     var carbonIneligibilityReason: CarbonIneligibilityReason? {
-        if self.isMouseShortcut { return .mouse }
-        if self.isModifierOnlyShortcut { return .modifierOnly }
-        if self.relevantModifierFlags.contains(.function) { return .function }
+        if self.isMouseShortcut {
+            return .mouse
+        }
+        if self.isModifierOnlyShortcut {
+            return .modifierOnly
+        }
+        if self.relevantModifierFlags.contains(.function) {
+            return .function
+        }
         if self.relevantModifierFlags.isDisjoint(with: [.command, .option, .control, .shift]) {
             return .missingModifier
         }
@@ -306,16 +324,40 @@ extension HotkeyShortcut {
 
     var carbonModifierFlags: UInt32 {
         var flags: UInt32 = 0
-        if self.relevantModifierFlags.contains(.command) { flags |= UInt32(cmdKey) }
-        if self.relevantModifierFlags.contains(.option) { flags |= UInt32(optionKey) }
-        if self.relevantModifierFlags.contains(.control) { flags |= UInt32(controlKey) }
-        if self.relevantModifierFlags.contains(.shift) { flags |= UInt32(shiftKey) }
+        if self.relevantModifierFlags.contains(.command) {
+            flags |= UInt32(cmdKey)
+        }
+        if self.relevantModifierFlags.contains(.option) {
+            flags |= UInt32(optionKey)
+        }
+        if self.relevantModifierFlags.contains(.control) {
+            flags |= UInt32(controlKey)
+        }
+        if self.relevantModifierFlags.contains(.shift) {
+            flags |= UInt32(shiftKey)
+        }
         return flags
     }
 
     var expectedModifierFlags: NSEvent.ModifierFlags? {
         guard let triggerFlag = self.modifierTriggerFlag else { return nil }
         return self.relevantModifierFlags.union(triggerFlag)
+    }
+
+    /// Physical letter/digit and editing keys need a modifier; punctuation and modifier-only keys remain available.
+    var requiresModifierForRecording: Bool {
+        guard !self.isMouseShortcut, !self.isModifierOnlyShortcut, self.relevantModifierFlags.isEmpty else { return false }
+        switch self.keyCode {
+        case 0...9, 11...23, 25, 26, 28, 29, 31, 32, 34...38, 40, 45, 46,
+             48, 49, 51, 53, 76, 82...89, 91, 92, 117:
+            return true
+        default:
+            return false
+        }
+    }
+
+    func matchesRecordingShortcut(keyCode: UInt16, modifiers: NSEvent.ModifierFlags) -> Bool {
+        !self.requiresModifierForRecording && self.matches(keyCode: keyCode, modifiers: modifiers)
     }
 
     func matches(keyCode: UInt16, modifiers: NSEvent.ModifierFlags) -> Bool {

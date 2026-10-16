@@ -14,8 +14,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/altic-dev/DynamicNotchKit.git",
       "state" : {
-        "branch" : "main",
-        "revision" : "708f31da5319436c64059ee7ae566953407063d7"
+        "revision" : "50dc8565469cc80bbbe3c0d5dd902585a2d67986"
       }
     },
     {
@@ -32,8 +31,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/altic-dev/FluidAudio.git",
       "state" : {
-        "branch" : "B/cohere-coreml-asr",
-        "revision" : "2e885ba247bdbbb3d3e932ba9701a5c165356df7"
+        "revision" : "eb1e6628998e47022799d305b52c2680d3576801"
       }
     },
     {
@@ -169,6 +167,15 @@
       "state" : {
         "revision" : "8b4a38dc994a110abaec8a400615567bd996105f",
         "version" : "0.12.0"
+      }
+    },
+    {
+      "identity" : "zeppelin-embed",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/zepdb/zeppelin-embed.git",
+      "state" : {
+        "revision" : "69b488e3a697ae22ebe2115c69ce2989b505dfe2",
+        "version" : "0.4.1"
       }
     }
   ],
