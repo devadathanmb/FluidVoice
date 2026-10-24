@@ -210,6 +210,25 @@ final class FocusedCarbonShortcutTests: XCTestCase {
         XCTAssertFalse(manager.handleAppKitCarbonHotKey(event))
     }
 
+    func testFocusedMonitorPassesThroughSystemDefinedEventsWithoutKeyCodes() throws {
+        let manager = self.makeManager(asr: ASRService(), keyPressed: { true }, start: {})
+        // Subtype 7 is a mouse-button event; AppKit throws if its keyCode is read.
+        for pressed in [1, 0] {
+            let event = try XCTUnwrap(NSEvent.otherEvent(
+                with: .systemDefined,
+                location: .zero,
+                modifierFlags: [],
+                timestamp: ProcessInfo.processInfo.systemUptime,
+                windowNumber: 0,
+                context: nil,
+                subtype: 7,
+                data1: 1,
+                data2: pressed
+            ))
+            XCTAssertTrue(manager.handleFocusedAppMonitorEvent(event) === event)
+        }
+    }
+
     func testNewerManagersCannotStealEventsOnTheRealCarbonHandlerChain() async throws {
         var firstStarts = 0
         var secondStarts = 0

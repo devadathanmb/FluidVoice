@@ -2618,18 +2618,25 @@ extension GlobalHotkeyManager {
         guard self.focusedAppShortcutMonitor == nil else { return }
         self.focusedAppShortcutMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp, .systemDefined]) { [weak self] event in
             guard let self else { return event }
-            if self.handleAppKitCarbonHotKey(event) {
-                return nil
-            }
-            let modifiers = event.modifierFlags.intersection(HotkeyShortcut.relevantModifierMask)
-            let handled = self.handleFocusedAppPrimaryShortcut(
-                keyCode: event.keyCode,
-                modifiers: modifiers,
-                isPressed: event.type == .keyDown,
-                timestamp: event.timestamp
-            )
-            return handled ? nil : event
+            return self.handleFocusedAppMonitorEvent(event)
         }
+    }
+
+    func handleFocusedAppMonitorEvent(_ event: NSEvent) -> NSEvent? {
+        if self.handleAppKitCarbonHotKey(event) {
+            return nil
+        }
+        // Other system-defined events (mouse buttons, media keys) have no keyCode;
+        // reading it raises an AppKit exception.
+        guard event.type == .keyDown || event.type == .keyUp else { return event }
+        let modifiers = event.modifierFlags.intersection(HotkeyShortcut.relevantModifierMask)
+        let handled = self.handleFocusedAppPrimaryShortcut(
+            keyCode: event.keyCode,
+            modifiers: modifiers,
+            isPressed: event.type == .keyDown,
+            timestamp: event.timestamp
+        )
+        return handled ? nil : event
     }
 
     func handleAppKitCarbonHotKey(_ event: NSEvent) -> Bool {
