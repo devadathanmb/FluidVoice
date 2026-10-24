@@ -19,6 +19,12 @@ jobs:
       - name: Show Xcode version
         run: xcodebuild -version
 
+      # Xcode ships the Metal compiler as a separate component; the app compiles .metal shaders.
+      - name: Install Metal Toolchain
+        run: |
+          xcodebuild -downloadComponent MetalToolchain
+          xcrun metal --version
+
       - name: Resolve Swift package dependencies
         run: |
           xcodebuild -resolvePackageDependencies \
