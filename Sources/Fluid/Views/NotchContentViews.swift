@@ -109,6 +109,7 @@ class NotchContentState: ObservableObject {
     @Published private(set) var spokenSendCountdownID: UInt64 = 0
     @Published var isTextDeliveryFailureVisible: Bool = false
     @Published private(set) var textDeliveryFailureMessage: String = "Text could not be inserted"
+    private(set) var textDeliveryFailureID = UUID()
     private(set) var textDeliveryFailureTranscript: String = ""
     private(set) var textDeliveryFailure: TextDeliveryFailure?
     @Published var activeDictationShortcutSlot: SettingsStore.DictationShortcutSlot? = nil
@@ -216,6 +217,7 @@ class NotchContentState: ObservableObject {
     }
 
     func recordTextDeliveryFailure(_ failure: TextDeliveryFailure, transcript: String) {
+        self.textDeliveryFailureID = UUID()
         self.textDeliveryFailureTranscript = transcript
         self.textDeliveryFailure = failure
         self.textDeliveryFailureMessage = failure.userFacingMessage ?? ""
@@ -225,6 +227,13 @@ class NotchContentState: ObservableObject {
     func clearTextDeliveryFailure() {
         self.isTextDeliveryFailureVisible = false
         self.textDeliveryFailure = nil
+    }
+
+    @discardableResult
+    func clearTextDeliveryFailure(ifPresentationID id: UUID) -> Bool {
+        guard self.isTextDeliveryFailureVisible, self.textDeliveryFailureID == id else { return false }
+        self.clearTextDeliveryFailure()
+        return true
     }
 
     /// Update transcription and recompute cached lines
@@ -523,6 +532,7 @@ struct NotchExpandedView: View {
     let audioPublisher: AnyPublisher<CGFloat, Never>
     @ObservedObject private var contentState = NotchContentState.shared
     @ObservedObject private var settings = SettingsStore.shared
+    @ObservedObject private var promptPresentation = DictationOverlayPresentationStore.shared
     @ObservedObject private var activeAppMonitor = ActiveAppMonitor.shared
     @Environment(\.theme) private var theme
     @State private var isHoveringPromptChip = false
@@ -625,13 +635,14 @@ struct NotchExpandedView: View {
         self.contentState.activeDictationShortcutSlot ?? .primary
     }
 
+    private var dictationPresentation: DictationOverlayPresentation {
+        self.activeDictationShortcutSlot == .secondary ? self.promptPresentation.value.secondary : self.promptPresentation.value.primary
+    }
+
     private var isAppPromptOverrideActive: Bool {
         guard let activePromptMode else { return false }
         if activePromptMode.normalized == .dictate {
-            return self.settings.isAppDictationPromptBindingActive(
-                for: self.activeDictationShortcutSlot,
-                appBundleID: self.promptResolutionBundleID
-            )
+            return self.dictationPresentation.hasAppOverride
         }
         return self.settings.hasAppPromptBinding(
             for: activePromptMode,
@@ -642,13 +653,7 @@ struct NotchExpandedView: View {
     private var selectedPromptLabel: String {
         guard let activePromptMode else { return "N/A" }
         if activePromptMode.normalized == .dictate {
-            if let label = self.contentState.stopSnapshotLabel {
-                return label
-            }
-            return self.settings.dictationOverlayLabel(
-                for: self.activeDictationShortcutSlot,
-                appBundleID: self.promptResolutionBundleID
-            )
+            return self.contentState.stopSnapshotLabel ?? self.dictationPresentation.label
         }
         if let profile = self.settings.resolvedPromptProfile(
             for: activePromptMode,
@@ -1161,6 +1166,7 @@ struct NotchExpandedView: View {
                 }
             }
         }
+        .onAppear { self.promptPresentation.start() }
         .coordinateSpace(name: Self.notchContentCoordinateSpace)
         .frame(width: self.notchContentWidth)
         .padding(.horizontal, 6)

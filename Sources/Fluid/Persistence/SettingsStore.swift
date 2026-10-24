@@ -519,13 +519,11 @@ final class SettingsStore: ObservableObject {
         self.setDictationPromptSelection(selection, for: .primary)
     }
 
-    func dictationPromptSelection(for slot: DictationShortcutSlot) -> DictationPromptSelection {
-        if self.isDictationPromptOff(for: slot) {
-            return .off
-        }
+    func dictationPromptSelection(for slot: DictationShortcutSlot, privateAIAvailable: Bool? = nil) -> DictationPromptSelection {
+        if self.isDictationPromptOff(for: slot) { return .off }
         if let promptID = self.selectedDictationPromptID(for: slot) {
             if promptID == PrivateAIProviderPromptFormat.promptSelectionID {
-                return PrivateAIProviderPromptFormat.isAvailable(settings: self) ? .privateAI : .default
+                return (privateAIAvailable ?? PrivateAIProviderPromptFormat.isAvailable(settings: self)) ? .privateAI : .default
             }
             return .profile(promptID)
         }
@@ -753,11 +751,9 @@ final class SettingsStore: ObservableObject {
         return self.dictationPromptProfiles.first(where: { $0.id == id && $0.mode.normalized == .dictate })
     }
 
-    func resolvedDictationPromptSelection(for slot: DictationShortcutSlot, appBundleID: String?) -> DictationPromptSelection {
-        if let manual = DictationAppSession.shared.choice(for: slot, appID: appBundleID) {
-            return manual
-        }
-        let selection = self.dictationPromptSelection(for: slot)
+    func resolvedDictationPromptSelection(for slot: DictationShortcutSlot, appBundleID: String?, privateAIAvailable: Bool? = nil) -> DictationPromptSelection {
+        if let manual = DictationAppSession.shared.choice(for: slot, appID: appBundleID) { return manual }
+        let selection = self.dictationPromptSelection(for: slot, privateAIAvailable: privateAIAvailable)
         guard selection != .off else { return .off }
         let appOnly = self.promptRoutingScope(for: .dictate) == .selectedAppsOnly
         guard appOnly || Self.dictationSelectionSupportsAppOverride(selection) else { return selection }
@@ -786,8 +782,8 @@ final class SettingsStore: ObservableObject {
         return system ? fallback.systemPrompt : fallback.promptBody
     }
 
-    func resolvedDictationPromptProfile(for slot: DictationShortcutSlot, appBundleID: String?) -> DictationPromptProfile? {
-        switch self.resolvedDictationPromptSelection(for: slot, appBundleID: appBundleID) {
+    func resolvedDictationPromptProfile(for slot: DictationShortcutSlot, appBundleID: String?, privateAIAvailable: Bool? = nil) -> DictationPromptProfile? {
+        switch self.resolvedDictationPromptSelection(for: slot, appBundleID: appBundleID, privateAIAvailable: privateAIAvailable) {
         case .off:
             return nil
         case let .profile(promptID):
@@ -802,9 +798,9 @@ final class SettingsStore: ObservableObject {
         }
     }
 
-    func isAppDictationPromptBindingActive(for slot: DictationShortcutSlot, appBundleID: String?) -> Bool {
+    func isAppDictationPromptBindingActive(for slot: DictationShortcutSlot, appBundleID: String?, privateAIAvailable: Bool? = nil) -> Bool {
         guard DictationAppSession.shared.choice(for: slot, appID: appBundleID) == nil else { return false }
-        let selection = self.dictationPromptSelection(for: slot)
+        let selection = self.dictationPromptSelection(for: slot, privateAIAvailable: privateAIAvailable)
         guard Self.dictationSelectionSupportsAppOverride(selection) else { return false }
         return self.hasAppPromptBinding(for: .dictate, appBundleID: appBundleID)
     }
@@ -825,19 +821,19 @@ final class SettingsStore: ObservableObject {
         return model.isEmpty ? "Basic" : "\(mode) · \(model)"
     }
 
-    func dictationPromptDisplayName(for slot: DictationShortcutSlot, appBundleID: String?) -> String {
-        switch self.resolvedDictationPromptSelection(for: slot, appBundleID: appBundleID) {
+    func dictationPromptDisplayName(for slot: DictationShortcutSlot, appBundleID: String?, privateAIAvailable: Bool? = nil) -> String {
+        switch self.resolvedDictationPromptSelection(for: slot, appBundleID: appBundleID, privateAIAvailable: privateAIAvailable) {
         case .off:
             return "Basic"
         case .default:
-            if let profile = self.resolvedDictationPromptProfile(for: slot, appBundleID: appBundleID) {
+            if let profile = self.resolvedDictationPromptProfile(for: slot, appBundleID: appBundleID, privateAIAvailable: privateAIAvailable) {
                 let name = profile.name.trimmingCharacters(in: .whitespacesAndNewlines)
                 return name.isEmpty ? "Untitled" : name
             }
             return "Default"
         case .privateAI:
-            if self.isAppDictationPromptBindingActive(for: slot, appBundleID: appBundleID) {
-                if let profile = self.resolvedDictationPromptProfile(for: slot, appBundleID: appBundleID) {
+            if self.isAppDictationPromptBindingActive(for: slot, appBundleID: appBundleID, privateAIAvailable: privateAIAvailable) {
+                if let profile = self.resolvedDictationPromptProfile(for: slot, appBundleID: appBundleID, privateAIAvailable: privateAIAvailable) {
                     let name = profile.name.trimmingCharacters(in: .whitespacesAndNewlines)
                     return name.isEmpty ? "Untitled" : name
                 }
@@ -2017,6 +2013,27 @@ final class SettingsStore: ObservableObject {
         }
     }
 
+    /// Lets the bundled `fv-serve` command read saved meetings. Off until the user turns it on;
+    /// the command reads this same key from the app's preferences.
+    var fluidServeMeetingAccessEnabled: Bool {
+        get { self.defaults.bool(forKey: FluidServeMeetings.accessDefaultsKey) }
+        set {
+            objectWillChange.send()
+            self.defaults.set(newValue, forKey: FluidServeMeetings.accessDefaultsKey)
+        }
+    }
+
+    /// Set when the user copied the skill instructions for an agent FluidVoice cannot see (Cursor,
+    /// Gemini and others). It keeps meetings shared after the Claude Code and Codex skills are removed,
+    /// until the user stops it.
+    var fluidServeOtherAgentsShared: Bool {
+        get { self.defaults.bool(forKey: "FluidServeOtherAgentsShared") }
+        set {
+            objectWillChange.send()
+            self.defaults.set(newValue, forKey: "FluidServeOtherAgentsShared")
+        }
+    }
+
     /// Skips clearly silent recordings up to four seconds before invoking ASR.
     /// Opt-in so quiet speech keeps the existing transcription behavior by default.
     var skipSilentRecordingsEnabled: Bool {
@@ -2136,6 +2153,17 @@ final class SettingsStore: ObservableObject {
         }
     }
 
+    /// Feature availability is separate from the user's meeting detection preferences.
+    @MainActor var fluidMeetEnabled: Bool {
+        get { self.defaults.object(forKey: Keys.fluidMeetEnabled) as? Bool ?? true }
+        set {
+            guard newValue != self.fluidMeetEnabled else { return }
+            objectWillChange.send()
+            self.defaults.set(newValue, forKey: Keys.fluidMeetEnabled)
+            NotificationCenter.default.post(name: .fluidMeetEnabledChanged, object: nil)
+        }
+    }
+
     /// Tier 1 native (Zoom/Teams/Webex) meeting auto-detection (default: ON).
     var meetingAutoDetectEnabled: Bool {
         get {
@@ -2151,9 +2179,14 @@ final class SettingsStore: ObservableObject {
         }
     }
 
-    /// Tier 2 browser-tab meeting auto-detection (default: OFF — reads the frontmost tab's URL).
+    /// Tier 2 browser-tab meeting auto-detection. On unless the user turned it off: Google Meet
+    /// only exists in a browser. It reads the frontmost tab's URL, which is never stored or sent.
     var meetingAutoDetectBrowserEnabled: Bool {
-        get { self.defaults.bool(forKey: Keys.meetingAutoDetectBrowserEnabled) }
+        get {
+            let value = self.defaults.object(forKey: Keys.meetingAutoDetectBrowserEnabled)
+            if value == nil { return true }
+            return self.defaults.bool(forKey: Keys.meetingAutoDetectBrowserEnabled)
+        }
         set {
             objectWillChange.send()
             self.defaults.set(newValue, forKey: Keys.meetingAutoDetectBrowserEnabled)
@@ -3231,6 +3264,27 @@ final class SettingsStore: ObservableObject {
         }
     }
 
+    /// Unassigned by default. Meeting recording never claims a shortcut until explicitly configured.
+    var meetingRecordingHotkeyShortcut: HotkeyShortcut? {
+        get {
+            guard let data = self.defaults.data(forKey: Keys.meetingRecordingHotkeyShortcut),
+                  let shortcut = try? JSONDecoder().decode(HotkeyShortcut.self, from: data),
+                  shortcut.isMeetingRecordingShortcut else { return nil }
+            return shortcut
+        }
+        set {
+            objectWillChange.send()
+            defer { NotificationCenter.default.post(name: .meetingRecordingShortcutChanged, object: nil) }
+            guard let newValue, newValue.isMeetingRecordingShortcut,
+                  let data = try? JSONEncoder().encode(newValue)
+            else {
+                self.defaults.removeObject(forKey: Keys.meetingRecordingHotkeyShortcut)
+                return
+            }
+            self.defaults.set(data, forKey: Keys.meetingRecordingHotkeyShortcut)
+        }
+    }
+
     // MARK: - Paste Last Transcription Settings
 
     /// Whether the "Paste Last Transcription" global hotkey is active. Opt-in and off by default.
@@ -3442,12 +3496,13 @@ final class SettingsStore: ObservableObject {
     }
 
     /// Whether the model rejects the `temperature` parameter.
-    /// Covers reasoning models plus Anthropic models that have deprecated temperature
-    /// (Opus 4.7+, every Claude 5 model, Fable/Mythos — Sonnet 4.6 and older still accept it).
-    func isTemperatureUnsupported(_ model: String) -> Bool {
-        if self.isReasoningModel(model) {
-            return true
-        }
+    /// Order: reasoning models, then support learned from `/models` metadata or a past
+    /// HTTP 400 (`ModelTemperatureSupport`), then a version check for Anthropic models that
+    /// have deprecated temperature (Opus 4.7+, every Claude 5 model, Fable/Mythos — Sonnet 4.6
+    /// and older still accept it).
+    func isTemperatureUnsupported(_ model: String, baseURL: String, support: ModelTemperatureSupport = .shared) -> Bool {
+        if self.isReasoningModel(model) { return true }
+        if let supported = support.isSupported(model, baseURL: baseURL) { return !supported }
         // Normalize version separators so dotted IDs (e.g. OpenRouter's
         // anthropic/claude-opus-4.8) match the hyphenated forms below.
         let modelLower = model.lowercased().replacingOccurrences(of: ".", with: "-")
@@ -3684,6 +3739,8 @@ final class SettingsStore: ObservableObject {
             rewriteModeSelectedModel: self.rewriteModeSelectedModel,
             rewriteModeSelectedProviderID: self.rewriteModeSelectedProviderID,
             rewriteModeLinkedToGlobal: self.rewriteModeLinkedToGlobal,
+            meetingRecordingHotkeyShortcut: self.meetingRecordingHotkeyShortcut,
+            meetingRecordingShortcutEnabled: self.meetingRecordingHotkeyShortcut != nil,
             cancelRecordingHotkeyShortcut: self.cancelRecordingHotkeyShortcut,
             pasteLastTranscriptionHotkeyShortcut: self.pasteLastTranscriptionHotkeyShortcut,
             pasteLastTranscriptionShortcutEnabled: self.pasteLastTranscriptionShortcutEnabled,
@@ -3836,6 +3893,9 @@ final class SettingsStore: ObservableObject {
         self.rewriteModeSelectedModel = payload.rewriteModeSelectedModel
         self.rewriteModeSelectedProviderID = payload.rewriteModeSelectedProviderID
         self.rewriteModeLinkedToGlobal = payload.rewriteModeLinkedToGlobal
+        if let enabled = payload.meetingRecordingShortcutEnabled {
+            self.meetingRecordingHotkeyShortcut = enabled ? payload.meetingRecordingHotkeyShortcut : nil
+        }
         self.cancelRecordingHotkeyShortcut = payload.cancelRecordingHotkeyShortcut
         // Both guarded so restoring an older backup (which predates these fields) doesn't wipe a
         // currently-configured shortcut or leave the feature enabled with no shortcut bound.
@@ -5228,7 +5288,7 @@ final class SettingsStore: ObservableObject {
             case .whisperBase: return 84_962_880
             case .whisperSmall: return 269_751_136
             case .whisperMedium: return 831_538_144
-            case .whisperLargeTurbo: return 886_381_760
+            case .whisperLargeTurbo: return 886_381_728
             case .whisperLarge: return 1_668_741_440
             case .appleSpeech, .appleSpeechAnalyzer: return 0
             }
@@ -5884,6 +5944,7 @@ private extension SettingsStore {
         static let meetingRecordingDefaults = "MeetingRecordingDefaults"
         static let meetingAudioRetentionPolicy = "MeetingAudioRetentionPolicy"
         static let meetingTranscriptionBackendID = "MeetingTranscriptionBackendID"
+        static let fluidMeetEnabled = "FluidMeetEnabled"
         static let meetingAutoDetectEnabled = "MeetingAutoDetectEnabled"
         static let meetingAutoDetectBrowserEnabled = "MeetingAutoDetectBrowserEnabled"
         static let microphoneSelectionMode = "MicrophoneSelectionMode"
@@ -5937,6 +5998,7 @@ private extension SettingsStore {
         static let commandModeSelectedProviderID = "CommandModeSelectedProviderID"
         static let commandModeHotkeyShortcut = "CommandModeHotkeyShortcut"
         static let commandModeConfirmBeforeExecute = "CommandModeConfirmBeforeExecute"
+        static let meetingRecordingHotkeyShortcut = "MeetingRecordingHotkeyShortcut"
         static let cancelRecordingHotkeyShortcut = "CancelRecordingHotkeyShortcut"
         static let pasteLastTranscriptionHotkeyShortcut = "PasteLastTranscriptionHotkeyShortcut"
         static let pasteLastTranscriptionShortcutEnabled = "PasteLastTranscriptionShortcutEnabled"
@@ -6469,4 +6531,9 @@ extension SettingsStore {
 
         return newModel
     }
+}
+
+extension Notification.Name {
+    static let fluidMeetEnabledChanged = Notification.Name("FluidMeetEnabledChanged")
+    static let meetingRecordingShortcutChanged = Notification.Name("MeetingRecordingShortcutChanged")
 }

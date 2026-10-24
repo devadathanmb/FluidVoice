@@ -174,6 +174,7 @@ enum ShortcutRecordingTarget: Hashable {
     case edit
     case cancel
     case pasteLast
+    case meeting
     case dictationPrompt(String)
     case newPrompt
 
@@ -189,6 +190,8 @@ enum ShortcutRecordingTarget: Hashable {
             return "Edit Mode"
         case .cancel:
             return "Cancel Recording"
+        case .meeting:
+            return "Start / Stop Meeting"
         case .pasteLast:
             return "Paste Last Transcription"
         case .dictationPrompt:
@@ -202,7 +205,7 @@ enum ShortcutRecordingTarget: Hashable {
         switch self {
         case .secondaryDictation, .command, .edit, .pasteLast:
             return true
-        case .primaryDictation, .cancel, .dictationPrompt, .newPrompt:
+        case .primaryDictation, .cancel, .meeting, .dictationPrompt, .newPrompt:
             return false
         }
     }
@@ -218,7 +221,7 @@ enum ShortcutRecordingTarget: Hashable {
         switch self {
         case .primaryDictation, .pasteLast:
             return true
-        case .secondaryDictation, .command, .edit, .cancel, .dictationPrompt, .newPrompt:
+        case .secondaryDictation, .command, .edit, .cancel, .meeting, .dictationPrompt, .newPrompt:
             return false
         }
     }
@@ -465,6 +468,14 @@ struct ContentView: View {
         return self.beginDictationRecording(for: .primary, mode: .dictate)
     }
 
+    func beginCommandModeSwitchForTesting() async {
+        await self.beginCommandRecording()
+    }
+
+    func beginRewriteModeSwitchForTesting() async {
+        await self.beginRewriteRecording()
+    }
+
     func blockDictationModeSwitchForTesting(savingCancellation: Bool = false, processing: Bool = false) {
         self.isSavingCancelledRecording = savingCancellation
         self.processingDictationLifecycleID = processing ? self.overlayLifecycleID : nil
@@ -528,6 +539,13 @@ struct ContentView: View {
             }
             .onReceive(NotificationCenter.default.publisher(for: .openCustomDictionaryFromVoiceEngine)) { _ in
                 self.navigateToApp(.customDictionary)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .fluidMeetEnabledChanged)) { _ in
+                if self.settings.fluidMeetEnabled, self.appServices.isUIReady {
+                    self.menuBarManager.configure(meetingCoordinator: self.appServices.meetingSessionCoordinator)
+                } else if !self.settings.fluidMeetEnabled, self.selectedSidebarItem == .meetingTranscription {
+                    self.selectedSidebarItem = .welcome
+                }
             }
             .onReceive(NotificationCenter.default.publisher(for: .appNavigationRequested)) { _ in
                 self.handlePendingAppNavigation()
@@ -803,9 +821,11 @@ struct ContentView: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
             DebugLogger.shared.info("🚦 Startup delay complete, signaling UI ready...", source: "ContentView")
             self.appServices.signalUIReady()
-            self.menuBarManager.configure(
-                meetingCoordinator: self.appServices.meetingSessionCoordinator
-            )
+            if self.settings.fluidMeetEnabled {
+                self.menuBarManager.configure(
+                    meetingCoordinator: self.appServices.meetingSessionCoordinator
+                )
+            }
 
             Task { @MainActor in
                 await AudioStartupGate.shared.scheduleOpenAfterInitialUISettled()
@@ -1231,6 +1251,10 @@ struct ContentView: View {
     }
 
     private func navigateToApp(_ destination: SidebarItem) {
+        guard destination != .meetingTranscription || self.settings.fluidMeetEnabled else {
+            self.openSettings(.fluidMeet)
+            return
+        }
         self.clearShortcutRecordingMode()
         self.resetSettingsSearch()
         self.settingsNavigation.leaveForApp()
@@ -1246,7 +1270,8 @@ struct ContentView: View {
     private func closeSettings() {
         self.clearShortcutRecordingMode()
         self.resetSettingsSearch()
-        self.selectedSidebarItem = self.settingsNavigation.dismiss()
+        let destination = self.settingsNavigation.dismiss()
+        self.selectedSidebarItem = destination == .meetingTranscription && !self.settings.fluidMeetEnabled ? .welcome : destination
     }
 
     private func resetSettingsSearch() {
@@ -1263,7 +1288,10 @@ struct ContentView: View {
         self.pendingModifierOnly = false
     }
 
-    private func shortcutConflictMessage(for shortcut: HotkeyShortcut, target: ShortcutRecordingTarget) -> String? {
+    func shortcutConflictMessage(for shortcut: HotkeyShortcut, target: ShortcutRecordingTarget) -> String? {
+        if target == .meeting, !shortcut.isMeetingRecordingShortcut {
+            return "Use a keyboard key with a modifier for meeting recording"
+        }
         if shortcut.isMouseShortcut {
             guard target.allowsMouseShortcut else {
                 return "Mouse clicks can only be assigned to Primary Dictation or Paste Last Transcription"
@@ -1279,7 +1307,7 @@ struct ContentView: View {
             if configuredShortcut == shortcut {
                 return "Duplicate with Primary Dictation Shortcut"
             }
-            if shortcut.conflictsWith(configuredShortcut) {
+            if shortcut.conflictsWith(configuredShortcut, includingKeyboardModifierPrefixes: target == .meeting) {
                 return "Overlaps Primary Dictation Shortcut — use a different modifier key"
             }
         }
@@ -1291,17 +1319,22 @@ struct ContentView: View {
         if self.isPromptModeShortcutEnabled {
             configuredShortcuts.append((.secondaryDictation, self.promptModeHotkeyShortcut))
         }
+        if self.isCommandModeShortcutEnabled, let shortcut = self.commandModeHotkeyShortcut {
+            configuredShortcuts.append((.command, shortcut))
+        }
+        if self.isPasteLastTranscriptionShortcutEnabled, let shortcut = self.pasteLastTranscriptionHotkeyShortcut {
+            configuredShortcuts.append((.pasteLast, shortcut))
+        }
         let optionalConfiguredShortcuts: [(ShortcutRecordingTarget, HotkeyShortcut?)] = [
+            (.meeting, SettingsStore.shared.meetingRecordingHotkeyShortcut),
             (.cancel, self.cancelRecordingHotkeyShortcut),
-            (.command, self.commandModeHotkeyShortcut),
-            (.pasteLast, self.pasteLastTranscriptionHotkeyShortcut),
         ]
 
         for (otherTarget, configuredShortcut) in configuredShortcuts where otherTarget != target {
             if configuredShortcut == shortcut {
                 return "Duplicate with \(otherTarget.title)"
             }
-            if shortcut.conflictsWith(configuredShortcut) {
+            if shortcut.conflictsWith(configuredShortcut, includingKeyboardModifierPrefixes: target == .meeting || otherTarget == .meeting) {
                 return "Overlaps \(otherTarget.title) — use a different modifier key"
             }
         }
@@ -1310,7 +1343,7 @@ struct ContentView: View {
             if configuredShortcut == shortcut {
                 return "Duplicate with \(otherTarget.title)"
             }
-            if shortcut.conflictsWith(configuredShortcut) {
+            if shortcut.conflictsWith(configuredShortcut, includingKeyboardModifierPrefixes: target == .meeting || otherTarget == .meeting) {
                 return "Overlaps \(otherTarget.title) — use a different modifier key"
             }
         }
@@ -1325,7 +1358,7 @@ struct ContentView: View {
             if assignment.shortcut == shortcut {
                 return "Duplicate with Prompt Shortcut"
             }
-            if shortcut.conflictsWith(assignment.shortcut) {
+            if shortcut.conflictsWith(assignment.shortcut, includingKeyboardModifierPrefixes: target == .meeting) {
                 return "Overlaps Prompt Shortcut — use a different modifier key"
             }
         }
@@ -1357,6 +1390,8 @@ struct ContentView: View {
             self.rewriteModeHotkeyShortcut = shortcut
             SettingsStore.shared.rewriteModeHotkeyShortcut = shortcut
             self.hotkeyManager?.updateRewriteModeShortcut(shortcut)
+        case .meeting:
+            SettingsStore.shared.meetingRecordingHotkeyShortcut = shortcut
         case .cancel:
             self.cancelRecordingHotkeyShortcut = shortcut
             SettingsStore.shared.cancelRecordingHotkeyShortcut = shortcut
@@ -1411,7 +1446,7 @@ struct ContentView: View {
         case .pasteLast:
             self.isPasteLastTranscriptionShortcutEnabled = enabled
             SettingsStore.shared.pasteLastTranscriptionShortcutEnabled = enabled
-        case .primaryDictation, .cancel, .dictationPrompt, .newPrompt:
+        case .primaryDictation, .cancel, .meeting, .dictationPrompt, .newPrompt:
             break
         }
     }
@@ -1528,11 +1563,13 @@ struct ContentView: View {
             Section {
                 self.sidebarNavigationLink(.commandMode, title: "Command Mode", systemImage: "terminal.fill")
                 self.sidebarNavigationLink(.fileTranscription, title: "File Transcription", systemImage: "doc.text.fill")
-                self.sidebarNavigationLink(
-                    .meetingTranscription,
-                    title: "FluidMeet",
-                    systemImage: "person.2.fill"
-                )
+                if self.settings.fluidMeetEnabled {
+                    self.sidebarNavigationLink(
+                        .meetingTranscription,
+                        title: "FluidMeet",
+                        systemImage: "person.2.fill"
+                    )
+                }
             } header: {
                 self.sidebarSectionHeader("Use")
             }
@@ -2133,7 +2170,7 @@ struct ContentView: View {
     private var hasPageToolbarActions: Bool {
         guard !self.settingsNavigation.isPresented else { return false }
         return switch self.selectedSidebarItem ?? .welcome {
-        case .stats, .commandMode, .meetingTranscription, .customDictionary, .changelog: true
+        case .stats, .commandMode, .customDictionary, .changelog: true
         default: false
         }
     }
@@ -2925,7 +2962,7 @@ struct ContentView: View {
         }
 
         // Check if this model doesn't support the temperature parameter
-        let isTemperatureUnsupported = SettingsStore.shared.isTemperatureUnsupported(derivedSelectedModel)
+        let isTemperatureUnsupported = SettingsStore.shared.isTemperatureUnsupported(derivedSelectedModel, baseURL: derivedBaseURL)
 
         // Get reasoning config for this model (uses per-model settings or auto-detection)
         // This handles custom parameters like reasoning_effort, enable_thinking, etc.
@@ -3484,13 +3521,14 @@ struct ContentView: View {
 
         // A sidebar search field that was already focused when recording began gets
         // the text through its field editor, which also fires change notifications.
+        // So does an in-app editor that opted in with `DictationTextTarget`.
         if isFluidFrontmost, shouldDeliverOutputs, !sendsExistingDraft,
            let focusTarget = self.recordingFocusTarget,
            focusTarget.pid == ProcessInfo.processInfo.processIdentifier,
            TypingService.isExactFocusTargetActive(focusTarget),
            let window = NSApp.keyWindow,
            let editor = window.firstResponder as? NSTextView,
-           SidebarSearchField.owns(editor, in: window)
+           SidebarSearchField.owns(editor, in: window) || DictationTextTarget.accepts(editor)
         {
             editor.insertText(finalText, replacementRange: editor.selectedRange())
         }
@@ -4855,22 +4893,23 @@ struct ContentView: View {
 
     private func prewarmPrivateAIDictationIfNeeded(for slot: SettingsStore.DictationShortcutSlot) {
         let appBundleID = self.asr.isRunningOrStarting ? self.recordingAppInfo?.bundleId : DictationAppSession.shared.appID
-        let settings = SettingsStore.shared
-        let route = DictationProviderRoute.resolve(
-            settings: settings,
-            dictationSlot: slot,
-            appBundleID: appBundleID
-        )
-        guard route.usesPrivateAI,
-              DictationAIPostProcessingGate.isConfigured(for: slot, appBundleID: appBundleID)
-        else { return }
-
-        // Cancel any prior prewarm so rapid start/stop doesn't queue duplicate
-        // actor work on PrivateAIIntegrationService.
         self.prewarmDictationTask?.cancel()
+        self.prewarmDictationTask = nil
+        guard let verification = DictationProviderRoute.privateAIWarmupVerification(
+            settings: .shared,
+            slot: slot,
+            appBundleID: appBundleID
+        ) else { return }
+
         let warmupGeneration = MeetingModelResidencyCoordinator.shared.warmupGeneration
         self.prewarmDictationTask = Task {
+            defer {
+                if !Task.isCancelled { self.prewarmDictationTask = nil }
+            }
             guard !Task.isCancelled, MeetingModelResidencyCoordinator.shared.canRunWarmup(warmupGeneration) else { return }
+            let modelID = await Task.detached(priority: .utility) { verification.verifiedModelID() }.value
+            guard modelID != nil, !Task.isCancelled,
+                  MeetingModelResidencyCoordinator.shared.canRunWarmup(warmupGeneration) else { return }
             DebugLogger.shared.debug(
                 "ContentView: AI dictation prewarm started slot=\(slot.rawValue)",
                 source: "ContentView"
@@ -4880,9 +4919,6 @@ struct ContentView: View {
                 "AI dictation prewarm complete slot=\(slot.rawValue)",
                 source: "ContentView"
             )
-            if !Task.isCancelled {
-                self.prewarmDictationTask = nil
-            }
         }
     }
 
@@ -4991,6 +5027,110 @@ struct ContentView: View {
         self.newModelName = ""
     }
 
+    private func beginCommandRecording() async {
+        guard self.canBeginDictationRecording() else { return }
+        DebugLogger.shared.info("Command mode triggered", source: "ContentView")
+        DictationStopSnapshot.captureStartingContext(reusingCapture: self.canSwitchActiveDictationCaptureMode) {
+            self.captureRecordingContext()
+        }
+
+        // Set flag so stopAndProcessTranscription knows to process as command
+        self.setActiveRecordingMode(.command)
+
+        // Set overlay mode to command
+        self.menuBarManager.setOverlayMode(.command)
+
+        guard !self.asr.isRunningOrStarting else { return }
+
+        self.advanceOverlayLifecycle()
+
+        // Start recording immediately for the command
+        DebugLogger.shared.info(
+            "Starting voice recording for command",
+            source: "ContentView"
+        )
+        let captureOverlayLifecycleID = self.overlayLifecycleID
+        let captureTask = Task {
+            guard !Task.isCancelled else {
+                self.clearCancelledCaptureStart(lifecycleID: captureOverlayLifecycleID, mode: .command)
+                return
+            }
+            let startOutcome = await self.asr.start(onCaptureStarted: {
+                TranscriptionSoundPlayer.shared.playStartSound()
+                self.appBench("overlay_phase phase=recording trigger=first_pcm mode=command")
+            })
+            guard !Task.isCancelled else {
+                self.clearCancelledCaptureStart(lifecycleID: captureOverlayLifecycleID, mode: .command)
+                return
+            }
+            if startOutcome == .failed {
+                self.menuBarManager.hideRecordingOverlayImmediately(
+                    reason: "command_asr_start_failed"
+                )
+            }
+        }
+        await self.awaitCaptureStart(captureTask)
+    }
+
+    private func beginRewriteRecording() async {
+        guard self.canBeginDictationRecording() else { return }
+
+        DictationStopSnapshot.captureStartingContext(reusingCapture: self.canSwitchActiveDictationCaptureMode) {
+            self.captureRecordingContext()
+        }
+
+        // Try to capture text first while still in the other app
+        let captured = self.rewriteModeService.captureSelectedText()
+        DebugLogger.shared.info("Rewrite mode triggered, text captured: \(captured)", source: "ContentView")
+
+        if !captured {
+            // No text selected - start in "write mode" where user speaks
+            // what to write
+            DebugLogger.shared
+                .info(
+                    "No text selected - starting in write/improve mode",
+                    source: "ContentView"
+                )
+            self.rewriteModeService.startWithoutSelection()
+            // Set overlay mode to edit
+            self.menuBarManager.setOverlayMode(.edit)
+        } else {
+            // Text was selected - edit mode (with selected context)
+            self.menuBarManager.setOverlayMode(.edit)
+        }
+
+        // Set flag so stopAndProcessTranscription knows to process as rewrite
+        self.setActiveRecordingMode(.edit)
+
+        guard !self.asr.isRunningOrStarting else { return }
+
+        self.advanceOverlayLifecycle()
+
+        // Start recording immediately for the edit instruction
+        DebugLogger.shared.info("Starting voice recording for edit mode", source: "ContentView")
+        let captureOverlayLifecycleID = self.overlayLifecycleID
+        let captureTask = Task {
+            guard !Task.isCancelled else {
+                self.clearCancelledCaptureStart(lifecycleID: captureOverlayLifecycleID, mode: .edit)
+                return
+            }
+            let startOutcome = await self.asr.start(onCaptureStarted: {
+                TranscriptionSoundPlayer.shared.playStartSound()
+                self.appBench("overlay_phase phase=recording trigger=first_pcm mode=edit")
+            })
+            guard !Task.isCancelled else {
+                self.clearCancelledCaptureStart(lifecycleID: captureOverlayLifecycleID, mode: .edit)
+                return
+            }
+            if startOutcome == .failed {
+                self.menuBarManager.hideRecordingOverlayImmediately(
+                    reason: "edit_asr_start_failed"
+                )
+            }
+        }
+        await self.awaitCaptureStart(captureTask)
+    }
+
     private func initializeHotkeyManagerIfNeeded() {
         NotchContentState.shared.onPromptModeSwitchRequested = { mode in
             self.handleLivePromptModeSwitch(mode)
@@ -5070,102 +5210,10 @@ struct ContentView: View {
                 await self.awaitCaptureStart(self.beginDictationRecording(for: selection, mode: .promptMode))
             },
             commandModeCallback: {
-                guard !self.presentExclusiveActivityBlockIfNeeded() else { return }
-                DebugLogger.shared.info("Command mode triggered", source: "ContentView")
-                self.captureRecordingContext()
-
-                // Set flag so stopAndProcessTranscription knows to process as command
-                self.setActiveRecordingMode(.command)
-
-                // Set overlay mode to command
-                self.menuBarManager.setOverlayMode(.command)
-
-                guard !self.asr.isRunningOrStarting else { return }
-
-                self.advanceOverlayLifecycle()
-
-                // Start recording immediately for the command
-                DebugLogger.shared.info(
-                    "Starting voice recording for command",
-                    source: "ContentView"
-                )
-                let captureOverlayLifecycleID = self.overlayLifecycleID
-                let captureTask = Task {
-                    guard !Task.isCancelled else {
-                        self.clearCancelledCaptureStart(lifecycleID: captureOverlayLifecycleID, mode: .command)
-                        return
-                    }
-                    let startOutcome = await self.asr.start(onCaptureStarted: {
-                        TranscriptionSoundPlayer.shared.playStartSound()
-                        self.appBench("overlay_phase phase=recording trigger=first_pcm mode=command")
-                    })
-                    guard !Task.isCancelled else {
-                        self.clearCancelledCaptureStart(lifecycleID: captureOverlayLifecycleID, mode: .command)
-                        return
-                    }
-                    if startOutcome == .failed {
-                        self.menuBarManager.hideRecordingOverlayImmediately(
-                            reason: "command_asr_start_failed"
-                        )
-                    }
-                }
-                await self.awaitCaptureStart(captureTask)
+                await self.beginCommandRecording()
             },
             rewriteModeCallback: {
-                guard !self.presentExclusiveActivityBlockIfNeeded() else { return }
-
-                self.captureRecordingContext()
-
-                // Try to capture text first while still in the other app
-                let captured = self.rewriteModeService.captureSelectedText()
-                DebugLogger.shared.info("Rewrite mode triggered, text captured: \(captured)", source: "ContentView")
-
-                if !captured {
-                    // No text selected - start in "write mode" where user speaks
-                    // what to write
-                    DebugLogger.shared
-                        .info(
-                            "No text selected - starting in write/improve mode",
-                            source: "ContentView"
-                        )
-                    self.rewriteModeService.startWithoutSelection()
-                    // Set overlay mode to edit
-                    self.menuBarManager.setOverlayMode(.edit)
-                } else {
-                    // Text was selected - edit mode (with selected context)
-                    self.menuBarManager.setOverlayMode(.edit)
-                }
-
-                // Set flag so stopAndProcessTranscription knows to process as rewrite
-                self.setActiveRecordingMode(.edit)
-
-                guard !self.asr.isRunningOrStarting else { return }
-
-                self.advanceOverlayLifecycle()
-
-                // Start recording immediately for the edit instruction
-                DebugLogger.shared.info("Starting voice recording for edit mode", source: "ContentView")
-                let captureOverlayLifecycleID = self.overlayLifecycleID
-                let captureTask = Task {
-                    guard !Task.isCancelled else {
-                        self.clearCancelledCaptureStart(lifecycleID: captureOverlayLifecycleID, mode: .edit)
-                        return
-                    }
-                    let startOutcome = await self.asr.start(onCaptureStarted: {
-                        TranscriptionSoundPlayer.shared.playStartSound()
-                        self.appBench("overlay_phase phase=recording trigger=first_pcm mode=edit")
-                    })
-                    guard !Task.isCancelled else {
-                        self.clearCancelledCaptureStart(lifecycleID: captureOverlayLifecycleID, mode: .edit)
-                        return
-                    }
-                    if startOutcome == .failed {
-                        self.menuBarManager.hideRecordingOverlayImmediately(
-                            reason: "edit_asr_start_failed"
-                        )
-                    }
-                }
-                await self.awaitCaptureStart(captureTask)
+                await self.beginRewriteRecording()
             },
             isDictateRecordingProvider: {
                 self.activeRecordingMode == .dictate
@@ -5199,6 +5247,14 @@ struct ContentView: View {
         // Distinguishes suggestion dismissal from recording cancellation.
         self.hotkeyManager?.setCancelCallback {
             self.handleCancelShortcutResult()
+        }
+
+        self.hotkeyManager?.setMeetingRecordingCallback {
+            Task { @MainActor in
+                await self.menuBarManager.toggleMeetingRecordingFromShortcut {
+                    try await AppServices.shared.startMeetingRecordingFromMenuBar()
+                }
+            }
         }
 
         // Re-insert the most recent transcription on demand (no clipboard involved).
@@ -5500,12 +5556,19 @@ extension ContentView {
         self.activeRecordingMode != .none && self.asr.canSwitchOwnedDictationCaptureMode
     }
 
+    private func clearOwnCaptureBlockErrorIfNeeded() {
+        if self.asr.showError, self.asr.errorTitle == "Dictation Unavailable",
+           self.asr.errorMessage == "Wait for the active dictation to finish."
+        { self.asr.showError = false }
+    }
+
     private func canBeginDictationRecording() -> Bool {
         guard !self.isSavingCancelledRecording, self.processingDictationLifecycleID == nil else {
             DebugLogger.shared.info("recording_rejected reason=output_busy savingCancelled=\(self.isSavingCancelledRecording) processing=\(self.processingDictationLifecycleID != nil)", source: "HotkeyTrace")
             return false
         }
         if self.canSwitchActiveDictationCaptureMode {
+            self.clearOwnCaptureBlockErrorIfNeeded()
             return true
         }
         guard !self.presentExclusiveActivityBlockIfNeeded() else {
@@ -5543,11 +5606,6 @@ extension ContentView {
         self.rewriteModeService.clearState()
 
         if switchesOwnedCapture {
-            if self.asr.showError, self.asr.errorTitle == "Dictation Unavailable",
-               self.asr.errorMessage == "Wait for the active dictation to finish."
-            {
-                self.asr.showError = false
-            }
             self.menuBarManager.setOverlayMode(.dictation)
             DebugLogger.shared.info(
                 "Dictation capture mode switched from=\(previousMode.rawValue) to=\(mode.rawValue) slot=\(slot.rawValue)",

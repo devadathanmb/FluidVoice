@@ -398,6 +398,8 @@ final class GlobalHotkeyManager: NSObject {
     private let isAccessibilityTrustedProvider: () -> Bool
     private let isCarbonShortcutPressedProvider: @MainActor (HotkeyShortcut) -> Bool?
     private var cancelCallback: (() -> CancelHandlingResult)?
+    private var meetingRecordingCallback: (() -> Void)?
+    private var meetingShortcutPressedKey: UInt16?
     private var pasteLastTranscriptionCallback: (() -> Void)?
     private var hotkeyMode: HotkeyActivationMode = SettingsStore.shared.hotkeyMode
     private let automaticTapThresholdSeconds: TimeInterval = 0.4
@@ -678,6 +680,14 @@ final class GlobalHotkeyManager: NSObject {
             name: .init("HoldSpaceToMuteChanged"),
             object: nil
         )
+        for name in [Notification.Name.fluidMeetEnabledChanged, .meetingRecordingShortcutChanged] {
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(self.meetingRecordingShortcutAvailabilityChanged),
+                name: name,
+                object: nil
+            )
+        }
 
         self.asrRunningCancellable = asrService.$isRunning
             .removeDuplicates()
@@ -1720,6 +1730,7 @@ final class GlobalHotkeyManager: NSObject {
     }
 
     func resetModifierOnlyShortcutTracking(reason: ModifierTrackingResetReason = .shortcutCapture) {
+        self.meetingShortcutPressedKey = nil
         self.invalidateAllRecordingActions()
         self.modifierPressReceivedAt = nil
         self.currentStopPressReceivedAt = nil
@@ -2343,6 +2354,9 @@ extension GlobalHotkeyManager {
         if let cancelShortcut, cancelShortcut.carbonCancelHotKeyRegistrationMode != .whileRecording {
             candidates.append(.init(action: .cancel, shortcut: cancelShortcut, label: "Cancel recording"))
         }
+        if SettingsStore.shared.fluidMeetEnabled, let shortcut = SettingsStore.shared.meetingRecordingHotkeyShortcut {
+            candidates.append(.init(action: .meetingRecording, shortcut: shortcut, label: "Meeting recording"))
+        }
         candidates += self.promptShortcutAssignments.enumerated().map {
             .init(action: .promptAssignment($0.offset), shortcut: $0.element.shortcut, label: "Prompt shortcut")
         }
@@ -2523,6 +2537,12 @@ extension GlobalHotkeyManager {
         case .cancel:
             if isPressed {
                 _ = self.handleCancelShortcut()
+            }
+            return
+        case .meetingRecording:
+            if isPressed {
+                self.markOtherInputDuringModifierOnly()
+                self.meetingRecordingCallback?()
             }
             return
         case .primary:
@@ -2712,6 +2732,10 @@ extension GlobalHotkeyManager {
         let keyCode = UInt16(event.getIntegerValueField(.keyboardEventKeycode))
         let eventModifiers = Self.modifierFlags(from: event.flags)
         let isAutorepeat = event.getIntegerValueField(.keyboardEventAutorepeat) != 0
+
+        if self.handleMeetingRecordingShortcut(type: type, keyCode: keyCode, modifiers: eventModifiers, isAutorepeat: isAutorepeat) {
+            return nil
+        }
 
         switch type {
         case .keyDown:
@@ -3327,6 +3351,11 @@ extension GlobalHotkeyManager {
         return Unmanaged.passUnretained(event)
     }
 
+    @objc private func meetingRecordingShortcutAvailabilityChanged() {
+        // The event tap reads the meeting shortcut live; Carbon must re-register it.
+        self.refreshCarbonRegistrationsIfNeeded()
+    }
+
     @objc private func holdSpaceSettingChanged() {
         if !SettingsStore.shared.holdSpaceToMute {
             self.holdToMuteSpaceTap.cancel()
@@ -3344,6 +3373,9 @@ extension GlobalHotkeyManager {
             shortcuts.append(self.rewriteModeShortcut)
         }
         if self.commandModeShortcutEnabled, let shortcut = self.commandModeShortcut {
+            shortcuts.append(shortcut)
+        }
+        if SettingsStore.shared.fluidMeetEnabled, let shortcut = SettingsStore.shared.meetingRecordingHotkeyShortcut {
             shortcuts.append(shortcut)
         }
         if let shortcut = SettingsStore.shared.cancelRecordingHotkeyShortcut {
@@ -3445,5 +3477,28 @@ extension GlobalHotkeyManager {
                 self.reconcileHoldToMute(isPhysicallyDown: CGEventSource.keyState(.hidSystemState, key: 49))
             }
         }
+    }
+}
+
+extension GlobalHotkeyManager {
+    func setMeetingRecordingCallback(_ callback: @escaping () -> Void) {
+        self.meetingRecordingCallback = callback
+    }
+
+    private func handleMeetingRecordingShortcut(type: CGEventType, keyCode: UInt16, modifiers: NSEvent.ModifierFlags, isAutorepeat: Bool) -> Bool {
+        if type == .keyUp, self.meetingShortcutPressedKey == keyCode {
+            self.meetingShortcutPressedKey = nil
+            return true
+        }
+        guard type == .keyDown, SettingsStore.shared.fluidMeetEnabled,
+              let shortcut = SettingsStore.shared.meetingRecordingHotkeyShortcut,
+              shortcut.matches(keyCode: keyCode, modifiers: modifiers),
+              !self.isSessionLockedProvider() else { return false }
+        self.markOtherInputDuringModifierOnly()
+        if !isAutorepeat {
+            self.meetingShortcutPressedKey = keyCode
+            self.meetingRecordingCallback?()
+        }
+        return true
     }
 }

@@ -7,6 +7,7 @@ enum CarbonHotKeyAction: Hashable {
     case rewriteMode
     case promptAssignment(Int)
     case cancel
+    case meetingRecording
 
     var id: UInt32 {
         switch self {
@@ -16,6 +17,7 @@ enum CarbonHotKeyAction: Hashable {
         case .rewriteMode: 0x40000000
         case let .promptAssignment(index): 0x50000000 | UInt32(index)
         case .cancel: 0x60000000
+        case .meetingRecording: 0x70000000
         }
     }
 
