@@ -309,7 +309,7 @@ struct ContentView: View {
     @State private var hotkeyManagerInitialized: Bool = false
     @State private var hotkeyAvailability: GlobalHotkeyAvailability = .initializing
     @State private var processingDictationLifecycleID: UInt64?
-    @State private var activeDictationAIRequest: CancellableDictationRequest<AITextProcessingResult>?
+    @State private var activeDictationAIRequest: CancellableDictationRequest?
     @State private var pendingVoiceCommandLifecycleID: UInt64?
     @State private var cancelledOutputLifecycleID: UInt64?
     @State private var isSavingCancelledRecording = false
@@ -3296,7 +3296,7 @@ struct ContentView: View {
             defer { refiningStatusTask.cancel() }
 
             let streamPreview = processingFeedback.streamPreview
-            let request = CancellableDictationRequest<AITextProcessingResult>()
+            let request = CancellableDictationRequest()
             self.activeDictationAIRequest = request
             defer {
                 streamPreview.invalidate()

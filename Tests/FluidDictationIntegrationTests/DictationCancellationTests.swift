@@ -100,7 +100,7 @@ final class DictationCancellationTests: XCTestCase {
         config.maxRetries = 1
         config.timeoutSeconds = 10
         config.onContentChunk = { _ in tokenReceived.fulfill() }
-        let request = CancellableDictationRequest<String>()
+        let request = CancellableDictationRequest()
         let capturedConfig = config
         let caller = Task { @MainActor in
             do {
@@ -126,7 +126,7 @@ final class DictationCancellationTests: XCTestCase {
     }
 
     func testCancellationReturnsBeforeAnUncooperativeProviderFinishes() async {
-        let request = CancellableDictationRequest<String>()
+        let request = CancellableDictationRequest()
         let backend = DelayedAIReply()
         let entered = expectation(description: "AI request started")
         let cancelled = expectation(description: "UI waiter cancelled")
@@ -156,7 +156,7 @@ final class DictationCancellationTests: XCTestCase {
     }
 
     func testCancellingTheCallerCancelsTheRequestWithoutWaitingForTheProvider() async {
-        let request = CancellableDictationRequest<String>()
+        let request = CancellableDictationRequest()
         let backend = DelayedAIReply()
         let entered = expectation(description: "AI request started")
         let cancelled = expectation(description: "Caller cancellation propagated")
@@ -179,7 +179,7 @@ final class DictationCancellationTests: XCTestCase {
     }
 
     func testCancellationBeforeStartDoesNotCallTheProvider() async {
-        let request = CancellableDictationRequest<String>()
+        let request = CancellableDictationRequest()
         request.cancel()
         var calledProvider = false
         do {
@@ -192,7 +192,7 @@ final class DictationCancellationTests: XCTestCase {
     }
 
     func testNormalCompletionStillDeliversTheProviderResult() async throws {
-        let request = CancellableDictationRequest<String>()
+        let request = CancellableDictationRequest()
         let value = try await request.value { "completed AI result" }
         XCTAssertEqual(value, "completed AI result")
         XCTAssertFalse(request.isCancelled)
@@ -201,8 +201,8 @@ final class DictationCancellationTests: XCTestCase {
     }
 
     func testLateCompletionFromACancelledRequestCannotFinishANewerRequest() async {
-        let old = CancellableDictationRequest<String>()
-        let new = CancellableDictationRequest<String>()
+        let old = CancellableDictationRequest()
+        let new = CancellableDictationRequest()
         let oldBackend = DelayedAIReply()
         let newBackend = DelayedAIReply()
         let oldEntered = expectation(description: "Old AI request entered")
@@ -256,7 +256,7 @@ final class DictationCancellationTests: XCTestCase {
     func testEscapeReleasesTheHotkeyStopLockBeforeTheOldAIReplyFinishes() async throws {
         let asr = ASRService()
         defer { asr.isRunning = false }
-        let request = CancellableDictationRequest<String>()
+        let request = CancellableDictationRequest()
         let backend = DelayedAIReply()
         let entered = expectation(description: "Post-processing is waiting for AI")
         let stopFinished = expectation(description: "Cancelled stop pipeline finished")
