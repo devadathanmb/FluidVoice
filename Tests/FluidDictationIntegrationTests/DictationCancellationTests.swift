@@ -200,6 +200,49 @@ final class DictationCancellationTests: XCTestCase {
         XCTAssertFalse(request.isCancelled)
     }
 
+    func testDeadlineReturnsRawFallbackSignalWithoutWaitingForProvider() async {
+        let request = CancellableDictationRequest()
+        let backend = DelayedAIReply()
+        let entered = expectation(description: "Provider started")
+        let timedOut = expectation(description: "Deadline released foreground waiter")
+        let caller = Task { @MainActor in
+            do {
+                _ = try await request.value(timeoutSeconds: 0.05) { await backend.wait(entered: entered) }
+                XCTFail("Late enhancement must not be delivered")
+            } catch {
+                XCTAssertTrue(error is DictationAIRequestError)
+                XCTAssertFalse(error is CancellationError, "Timeout must deliver raw text, not cancel output")
+                timedOut.fulfill()
+            }
+        }
+        await fulfillment(of: [entered, timedOut], timeout: 2)
+        XCTAssertFalse(request.isCancelled)
+        XCTAssertFalse(backend.finished)
+        request.cancel()
+        XCTAssertFalse(request.isCancelled)
+        backend.release()
+        await caller.value
+    }
+
+    func testCompletionBeforeDeadlineCancelsTimeout() async throws {
+        let request = CancellableDictationRequest()
+        let result = try await request.value(timeoutSeconds: 0.05) { "enhanced text" }
+        XCTAssertEqual(result, "enhanced text")
+        XCTAssertFalse(request.isCancelled)
+        XCTAssertEqual(CancellableDictationRequest.postProcessingTimeoutSeconds, 10)
+    }
+
+    func testEscapeBeforeDeadlineRemainsCancellationRatherThanFallback() async {
+        let request = CancellableDictationRequest()
+        request.cancel()
+        do {
+            _ = try await request.value(timeoutSeconds: 0.05) { "unexpected" }
+            XCTFail("Escape must cancel output")
+        } catch {
+            XCTAssertTrue(error is CancellationError)
+        }
+    }
+
     func testLateCompletionFromACancelledRequestCannotFinishANewerRequest() async {
         let old = CancellableDictationRequest()
         let new = CancellableDictationRequest()

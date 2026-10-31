@@ -6,6 +6,7 @@ import Combine
 import CoreAudio
 @testable import FluidVoice_Debug
 import Foundation
+import QuartzCore
 import SwiftUI
 import XCTest
 
@@ -2579,6 +2580,45 @@ final class HotkeyShortcutTests: XCTestCase {
 
     func testBottomOverlayExitUsesMinimalFadeDuration() {
         XCTAssertEqual(BottomOverlayWindowController.exitDuration, 0.08, accuracy: 0.001)
+    }
+
+    @MainActor
+    func testPillFailureExpandsToShowTheFallbackMessageAndActions() {
+        let normal = BottomOverlayView.LayoutConstants.get(for: .pill)
+        let failure = BottomOverlayView.LayoutConstants.get(for: .pill, showingFailure: true)
+        XCTAssertFalse(normal.showsPreview)
+        XCTAssertTrue(failure.showsPreview)
+        XCTAssertGreaterThan(failure.containerWidth, normal.containerWidth)
+        XCTAssertTrue(BottomOverlayView.LayoutConstants.get(for: .small, showingFailure: true).showsPreview)
+    }
+
+    @MainActor
+    func testOutputCompletionClearsProcessingWithoutWaitingForAnimation() async {
+        let previous = SettingsStore.shared.overlayClosingAnimationEnabled
+        let previousPosition = SettingsStore.shared.overlayPosition
+        SettingsStore.shared.overlayClosingAnimationEnabled = false
+        SettingsStore.shared.overlayPosition = .bottom
+        defer {
+            SettingsStore.shared.overlayClosingAnimationEnabled = previous
+            SettingsStore.shared.overlayPosition = previousPosition
+        }
+        let controller = BottomOverlayWindowController.shared
+        let manager = MenuBarManager()
+        NotchOverlayManager.shared.show(audioLevelPublisher: Just(CGFloat.zero).eraseToAnyPublisher(), mode: .dictation)
+        NotchContentState.shared.setProcessing(true)
+
+        let committed = expectation(description: "Enclosing transaction committed")
+        CATransaction.begin()
+        manager.beginProcessingCompletionAndHideOverlay()
+        XCTAssertFalse(NotchContentState.shared.isProcessing, "Logical completion cannot wait for Core Animation")
+        // Simulate another caller installing its own completion on the same turn.
+        CATransaction.setCompletionBlock { committed.fulfill() }
+        CATransaction.commit()
+        CATransaction.flush()
+        await fulfillment(of: [committed], timeout: 3)
+        XCTAssertTrue(controller.isVisuallyHiddenForTests)
+        XCTAssertFalse(NotchContentState.shared.isBottomOverlayPresented, "Bottom cleanup must not be overwritten by manager cleanup")
+        XCTAssertFalse(NotchContentState.shared.isBottomOverlayReleaseTransitioning)
     }
 
     @MainActor

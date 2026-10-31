@@ -673,6 +673,8 @@ final class MenuBarManager: NSObject, ObservableObject, NSMenuDelegate {
     /// Removes the completed recording overlay immediately unless the optional
     /// closing transition is enabled.
     func beginProcessingCompletionAndHideOverlay() {
+        CATransaction.begin()
+        defer { CATransaction.commit() }
         let startedAt = ProcessInfo.processInfo.systemUptime
         self.prepareForProcessingCompletion()
         self.overlayBench("finish_hide_request closingAnimation=\(SettingsStore.shared.overlayClosingAnimationEnabled)")
@@ -792,6 +794,8 @@ final class MenuBarManager: NSObject, ObservableObject, NSMenuDelegate {
         self.cancelPendingProcessingCompletionOperations()
         self.isProcessingActive = false
         self.overlayVisible = false
+        // Logical completion must not depend on an animation callback firing.
+        NotchContentState.shared.setProcessing(false)
     }
 
     private func overlayBench(_ message: @autoclosure () -> String) {

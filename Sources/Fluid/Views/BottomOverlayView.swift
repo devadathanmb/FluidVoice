@@ -272,6 +272,10 @@ final class BottomOverlayWindowController {
     /// parked rather than destroyed so the next presentation keeps its warm
     /// SwiftUI and WindowServer surface.
     func hideImmediately() {
+        // Each layer of overlay ownership needs its own completion callback.
+        // A shared implicit transaction has only one slot; callers overwrite it.
+        CATransaction.begin()
+        defer { CATransaction.commit() }
         var trace = OverlayCloseTrace("bottom.hide")
         defer { trace.finish() }
         let startedAt = ProcessInfo.processInfo.systemUptime
@@ -2430,7 +2434,10 @@ struct BottomOverlayView: View {
         let showsPreview: Bool
         let showsModeLabel: Bool
 
-        static func get(for size: SettingsStore.OverlaySize) -> LayoutConstants {
+        static func get(for size: SettingsStore.OverlaySize, showingFailure: Bool = false) -> LayoutConstants {
+            if size == .pill, showingFailure {
+                return self.get(for: .small)
+            }
             switch size {
             case .pill:
                 return LayoutConstants(
@@ -2533,7 +2540,7 @@ struct BottomOverlayView: View {
     }
 
     private var layout: LayoutConstants {
-        LayoutConstants.get(for: self.settings.overlaySize)
+        LayoutConstants.get(for: self.settings.overlaySize, showingFailure: self.hasFailurePresentation)
     }
 
     private var isCompactControls: Bool {
@@ -2545,7 +2552,11 @@ struct BottomOverlayView: View {
     }
 
     private var isPillSize: Bool {
-        self.settings.overlaySize == .pill
+        self.settings.overlaySize == .pill && !self.hasFailurePresentation
+    }
+
+    private var hasFailurePresentation: Bool {
+        self.contentState.isAIProcessingFailureVisible || self.contentState.isTextDeliveryFailureVisible
     }
 
     private var modeColor: Color {

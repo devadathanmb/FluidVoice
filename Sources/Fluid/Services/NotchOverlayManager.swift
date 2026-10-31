@@ -327,6 +327,8 @@ final class NotchOverlayManager {
     /// Removes a successfully completed recording overlay synchronously so it
     /// cannot outlive the text insertion that follows.
     func hideImmediately() {
+        CATransaction.begin()
+        defer { CATransaction.commit() }
         var trace = OverlayCloseTrace("manager.hide")
         defer { trace.finish() }
         let startedAt = ProcessInfo.processInfo.systemUptime

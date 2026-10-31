@@ -3311,7 +3311,7 @@ struct ContentView: View {
             do {
                 self.logAIProcessCall(pipelineID, postProcessingModelInfo, postProcessingInputChars)
                 let snapshotForAI = stopSnapshot
-                let result = try await request.value {
+                let result = try await request.value(timeoutSeconds: CancellableDictationRequest.postProcessingTimeoutSeconds) {
                     try await self.processTextWithAIMetrics(
                         normalizedTranscribedText,
                         overrideSystemPrompt: promptOverride,
@@ -3664,7 +3664,10 @@ struct ContentView: View {
         // compete with it on the main actor. Sandbox runs never present either.
         if shouldShowAIProcessingFailure {
             self.pendingAIReprocessText = spokenSendParse.shouldSend ? normalizedTranscribedText : transcribedText
-            NotchContentState.shared.showAIProcessingFailure()
+            NotchContentState.shared.showAIProcessingFailure(
+                message: aiFallbackReason == DictationAIRequestError.timedOut.localizedDescription
+                    ? "AI timed out — raw dictation delivered" : "AI Enhancement failed — raw dictation delivered"
+            )
             self.menuBarManager.finishProcessingKeepingOverlayVisible()
             if let aiFallbackNotificationError {
                 NotificationService.showAIProcessingFallback(error: aiFallbackNotificationError)
