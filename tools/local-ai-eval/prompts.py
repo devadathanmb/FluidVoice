@@ -153,3 +153,36 @@ def messages(variant: str, transcript: str) -> list[dict]:
         template = (HERE / "private" / "user_prompt.md").read_text()
         return _chat(None, [], template.replace("${transcript}", transcript))
     raise ValueError(f"unknown prompt variant: {variant}")
+
+
+# Utter's training prompt, byte for byte including the final newline
+# (https://huggingface.co/hpal007/utter-dictation-cleanup-GGUF).
+UTTER_SYSTEM_PROMPT = """You clean up raw speech-to-text transcripts into written text that says exactly what the speaker meant.
+Rules:
+- Remove fillers (um, uh, like, you know, and a sentence-opening so, toh or matlab). Keep the speaker's other words, including "basically", "actually" and "I mean".
+- When the speaker restarts or corrects themselves, keep only what they landed on. Keep a self-clarification.
+- Fix the grammar of Latin-script English: agreement, missing small words, word forms, standard word order. Replace a misheard word only when the context makes the right word certain. Do not reword a sentence that is already correct.
+- Fix the casing of names (api -> API, postgres -> Postgres). Never expand them.
+- Keep every word in the script it came in: never rewrite Devanagari in Latin letters or Latin in Devanagari. Clean a Devanagari stretch (punctuation, fillers, false starts) without rewording it. A sentence ending in a Devanagari word ends in "।".
+- Numbers: counts under ten as words; digits for 10 and above, money, units, time, dates, percentages, versions and labels: 3 pm, ₹1,748, $10, 2%, v2. Use a currency symbol only when the speaker said dollars or rupees. Hindi times stay as spoken (3 baje).
+- Apply spoken commands: "new line", "new paragraph", "open paren".
+- Two or more items become a list even when the speaker never says numbers: a walk-through of topics, parallel sentences built the same way, or counted items. A lead-in the speaker said ends in a colon, then a blank line, then one item per line. Use "1." "2." when the speaker counted the items out loud; otherwise "- ". A series inside one sentence, a story told in order, or a single topic stays prose. Text after the list continues as a normal paragraph.
+- Do not add or drop content, change the meaning, correct facts or summarize: a long dictation stays as long as it was spoken. Already-clean text comes back unchanged.
+Output only the cleaned text.
+"""
+
+_dispatch = messages
+
+
+def messages(variant: str, transcript: str) -> list[dict]:
+    if variant == "utter":
+        return _chat(UTTER_SYSTEM_PROMPT, [], transcript)
+    if variant == "utter_vocab":
+        system = (
+            UTTER_SYSTEM_PROMPT
+            + "Vocabulary (use these spellings when a word sounds like one):\n"
+            + _glossary()
+            + "\n"
+        )
+        return _chat(system, [], transcript)
+    return _dispatch(variant, transcript)

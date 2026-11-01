@@ -3,7 +3,11 @@ name = "local-ai-eval"
 version = "0.1.0"
 description = "Benchmark harness for FluidVoice on-device dictation post-processing models"
 requires-python = ">=3.12,<3.13"
-dependencies = ["mlx-lm>=0.31", "huggingface_hub>=0.34"]
+dependencies = [
+    "mlx-lm>=0.31",
+    "huggingface_hub>=0.34",
+    "gguf>=0.19.0",
+]
 
 [tool.uv]
 package = false

@@ -15,6 +15,7 @@ from huggingface_hub import snapshot_download
 from mlx_lm import load, stream_generate
 from mlx_lm.models.cache import make_prompt_cache
 
+import folded_lora
 import prompts
 
 HERE = Path(__file__).parent
@@ -57,10 +58,16 @@ def main():
     ap.add_argument("--tag", default="")
     ap.add_argument("--cases", default=str(HERE / "cases.jsonl"))
     ap.add_argument("--no-prefix-cache", action="store_true")
+    ap.add_argument(
+        "--server", help="OpenAI-compatible base URL (llama-server); skips MLX loading"
+    )
+    ap.add_argument(
+        "--folded-adapter", help="PEFT LoRA with scale folded into B (Glimpse C1)"
+    )
     args = ap.parse_args()
 
     path = Path(args.model)
-    if not path.exists():
+    if not args.server and not path.exists():
         path = Path(
             snapshot_download(
                 args.model, allow_patterns=[f"{args.subdir}/*"] if args.subdir else None
@@ -69,8 +76,13 @@ def main():
     if args.subdir:
         path = path / args.subdir
 
+    if args.server:
+        return run_server(args)
+
     t0 = time.perf_counter()
     model, tokenizer = load(str(path))
+    if args.folded_adapter:
+        folded_lora.apply(model, Path(args.folded_adapter))
     load_s = time.perf_counter() - t0
 
     cases = [
@@ -151,6 +163,65 @@ def main():
                 "results": results,
             },
             indent=1,
+        )
+    )
+    print("wrote", out_path)
+
+
+def run_server(args):
+    """Benchmark a llama-server endpoint with the same cases and result format."""
+    import urllib.request
+
+    cases = [
+        json.loads(line)
+        for line in Path(args.cases).read_text().splitlines()
+        if line.strip()
+    ]
+    results = []
+    for case in cases:
+        body = {
+            "messages": prompts.messages(args.variant, case["input"]),
+            "temperature": 0,
+            "max_tokens": len(case["input"]) // 2 + 64,
+            "chat_template_kwargs": {"enable_thinking": False},
+        }
+        start = time.perf_counter()
+        request = urllib.request.Request(
+            args.server.rstrip("/") + "/v1/chat/completions",
+            data=json.dumps(body).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(request, timeout=120) as response:
+            data = json.loads(response.read())
+        end = time.perf_counter()
+        out = THINK_RE.sub("", data["choices"][0]["message"]["content"] or "").strip()
+        timings = data.get("timings", {})
+        results.append(
+            {
+                "id": case["id"],
+                "cat": case["cat"],
+                "input": case["input"],
+                "refs": case["refs"],
+                "output": out,
+                "ttft_ms": round(timings.get("prompt_ms", 0), 1),
+                "total_ms": round((end - start) * 1000, 1),
+                "prompt_tokens": data["usage"]["prompt_tokens"],
+                "fed_tokens": timings.get("prompt_n", 0),
+                "gen_tokens": data["usage"]["completion_tokens"],
+                "gen_tps": round(timings.get("predicted_per_second", 0), 1),
+                "peak_gb": 0,
+                "finish": data["choices"][0].get("finish_reason"),
+            }
+        )
+        print(
+            f"{case['id']:<10} {results[-1]['total_ms']:>7.0f}ms  {out[:90]!r}",
+            flush=True,
+        )
+    out_path = HERE / "results" / f"{args.tag}.json"
+    out_path.parent.mkdir(exist_ok=True)
+    out_path.write_text(
+        json.dumps(
+            {"model": args.model, "variant": args.variant, "results": results}, indent=1
         )
     )
     print("wrote", out_path)
