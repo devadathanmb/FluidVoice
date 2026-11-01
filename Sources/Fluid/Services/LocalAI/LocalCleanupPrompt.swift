@@ -107,6 +107,13 @@ nonisolated enum LocalCleanupPrompt {
         return .accept(output)
     }
 
+    /// Generation cap for a transcript of `transcriptTokens` tokens. Output this long
+    /// already fails the growth check in `check`; list markers and line breaks need
+    /// headroom beyond the spoken words, and a short transcript still gets a few lines.
+    static func outputTokenLimit(transcriptTokens: Int) -> Int {
+        transcriptTokens * 2 + 48
+    }
+
     static func strip(_ text: String) -> String {
         var text = text
         if let range = text.range(of: "</think>") {

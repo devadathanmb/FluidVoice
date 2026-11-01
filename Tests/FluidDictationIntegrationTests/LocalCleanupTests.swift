@@ -89,6 +89,11 @@ final class LocalCleanupPromptTests: XCTestCase {
         XCTAssertFalse(LocalCleanupModelStore.isVerified(url, as: .init(name: "w", byteCount: size, sha256: nil)))
     }
 
+    func testOutputTokenLimitLeavesRoomForCleanupButStopsAnswers() {
+        XCTAssertGreaterThanOrEqual(LocalCleanupPrompt.outputTokenLimit(transcriptTokens: 1), 48)
+        XCTAssertEqual(LocalCleanupPrompt.outputTokenLimit(transcriptTokens: 100), 248)
+    }
+
     func testOtherInstalledDirectoriesExcludeCurrentModel() throws {
         let model = LocalCleanupModelCatalog.defaultModel
         let root = LocalCleanupModelStore.rootDirectory
@@ -143,7 +148,10 @@ final class LocalCleanupRuntimeE2ETests: XCTestCase {
             for needle in testCase.mustNotContain {
                 XCTAssertFalse(output.localizedCaseInsensitiveContains(needle), "\(output) still has \(needle)")
             }
-            print("LocalCleanupE2E \(result.totalMilliseconds)ms \(Int(result.tokensPerSecond)) tok/s: \(output)")
+            print(
+                "LocalCleanupE2E \(result.totalMilliseconds)ms prefill=\(result.prefillMilliseconds)ms "
+                    + "\(Int(result.tokensPerSecond)) tok/s: \(output)"
+            )
         }
         await runtime.unload()
     }

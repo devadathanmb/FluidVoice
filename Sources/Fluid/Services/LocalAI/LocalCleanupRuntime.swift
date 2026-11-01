@@ -16,6 +16,7 @@ actor LocalCleanupRuntime {
         let text: String
         let promptTokens: Int
         let generatedTokens: Int
+        /// Time to the first generated token: prompt rendering plus prefill.
         let prefillMilliseconds: Int
         let totalMilliseconds: Int
         let tokensPerSecond: Double
@@ -47,10 +48,15 @@ actor LocalCleanupRuntime {
     /// of making the model resident again behind the caller's back.
     private var generation = 0
     private var prefix: PrefixCache?
+    /// Decode kernels compile on the first generation after a load; later prewarms skip it.
+    private var isDecodeWarm = false
 
     /// Bound MLX's reusable buffer pool so an idle model does not grow resident
     /// memory past its weights; dictation runs alongside other dev tools.
     private static let bufferCacheLimit = 256 << 20
+    /// Prefill the shared prefix in chunks so a long vocabulary does not spike
+    /// attention memory in one pass.
+    private static let prefillChunkSize = 512
 
     var currentModelID: String? {
         self.loaded?.id
@@ -95,6 +101,7 @@ actor LocalCleanupRuntime {
         self.pendingLoad = nil
         self.loaded = nil
         self.prefix = nil
+        self.isDecodeWarm = false
         Memory.clearCache()
     }
 
@@ -103,6 +110,7 @@ actor LocalCleanupRuntime {
     func prewarm(vocabulary: [LocalCleanupPrompt.VocabularyTerm]) throws {
         guard let loaded else { return }
         let prefix = try self.prefixCache(loaded.context, vocabulary: vocabulary)
+        guard !self.isDecodeWarm else { return }
         let tokens = try self.cleanupTokens(loaded.context, transcript: "ok", vocabulary: vocabulary)
         _ = try self.generate(loaded, tokens: tokens, prefix: prefix, maxTokens: 2, onText: nil)
     }
@@ -117,11 +125,14 @@ actor LocalCleanupRuntime {
         guard let loaded else { throw LocalCleanupError.modelNotInstalled("none loaded") }
         let prefix = try self.prefixCache(loaded.context, vocabulary: vocabulary)
         let tokens = try self.cleanupTokens(loaded.context, transcript: transcript, vocabulary: vocabulary)
+        // Anything far longer than the transcript fails the output guard anyway, so
+        // stop an answer or runaway early instead of generating the whole budget.
+        let transcriptTokens = loaded.context.tokenizer.encode(text: transcript, addSpecialTokens: false).count
         return try self.generate(
             loaded,
             tokens: tokens,
             prefix: prefix,
-            maxTokens: maxOutputTokens,
+            maxTokens: min(maxOutputTokens, LocalCleanupPrompt.outputTokenLimit(transcriptTokens: transcriptTokens)),
             onText: onText
         )
     }
@@ -158,6 +169,7 @@ actor LocalCleanupRuntime {
         if self.loaded?.id != model.id {
             self.loaded = model
             self.prefix = nil
+            self.isDecodeWarm = false
         }
         self.pendingLoad = nil
     }
@@ -214,9 +226,14 @@ actor LocalCleanupRuntime {
         guard tokens.count >= 16 else { return nil }
 
         let cache = try context.model.newCache(parameters: nil)
-        let input = MLXArray(tokens.map(Int32.init)).reshaped(1, tokens.count)
-        _ = context.model(input, cache: cache)
-        eval(cache)
+        var start = 0
+        while start < tokens.count {
+            let end = min(start + Self.prefillChunkSize, tokens.count)
+            let chunk = MLXArray(tokens[start..<end].map(Int32.init)).reshaped(1, end - start)
+            _ = context.model(chunk, cache: cache)
+            eval(cache)
+            start = end
+        }
         let built = PrefixCache(vocabulary: vocabulary, tokens: tokens, cache: cache)
         self.prefix = built
         return built
@@ -245,11 +262,15 @@ actor LocalCleanupRuntime {
             sampler: ArgMaxSampler(),
             maxTokens: max(1, maxTokens)
         )
-        let prefillDone = Date()
 
+        // Prefill is evaluated lazily, so the first token marks its end.
+        var firstTokenAt: Date?
         var detokenizer = onText.map { _ in NaiveStreamingDetokenizer(tokenizer: loaded.context.tokenizer) }
         var generatedTokens: [Int] = []
         while let token = iterator.next() {
+            if firstTokenAt == nil {
+                firstTokenAt = Date()
+            }
             if loaded.stopTokenIDs.contains(token) {
                 break
             }
@@ -262,7 +283,9 @@ actor LocalCleanupRuntime {
                 }
             }
         }
+        self.isDecodeWarm = true
         let end = Date()
+        let prefillDone = firstTokenAt ?? end
         let decodeSeconds = end.timeIntervalSince(prefillDone)
         // Decode once at the end so the result never depends on streaming segmentation.
         let text = loaded.context.tokenizer.decode(tokenIds: generatedTokens, skipSpecialTokens: true)
@@ -272,7 +295,8 @@ actor LocalCleanupRuntime {
             generatedTokens: generatedTokens.count,
             prefillMilliseconds: Int(prefillDone.timeIntervalSince(start) * 1000),
             totalMilliseconds: Int(end.timeIntervalSince(start) * 1000),
-            tokensPerSecond: decodeSeconds > 0 ? Double(generatedTokens.count) / decodeSeconds : 0
+            tokensPerSecond: decodeSeconds > 0 && generatedTokens.count > 1
+                ? Double(generatedTokens.count - 1) / decodeSeconds : 0
         )
     }
 }
