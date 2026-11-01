@@ -2515,9 +2515,11 @@ extension DictationE2ETests {
 
             UserDefaults.standard.set(tempURL.path, forKey: self.privateAILocalModelPathKey)
 
+            // A configured path alone never makes the runtime ready; the selected model must be installed.
             XCTAssertEqual(
                 PrivateAIIntegrationService.isLocalRuntimeConfigured,
                 PrivateFeatures.privateAIProvider
+                    && PrivateAIIntegrationService.isModelInstalled(PrivateAIIntegrationService.selectedModel, useCache: false)
             )
             XCTAssertFalse(PrivateAIIntegrationService.shouldHandleDictation(model: "gpt-4.1"))
             XCTAssertEqual(
@@ -2550,9 +2552,11 @@ extension DictationE2ETests {
             settings.verifiedProviderFingerprints = [:]
             settings.setDictationPromptSelection(.default)
 
+            // A configured path alone never makes the runtime ready; the selected model must be installed.
             XCTAssertEqual(
                 PrivateAIIntegrationService.isLocalRuntimeConfigured,
                 PrivateFeatures.privateAIProvider
+                    && PrivateAIIntegrationService.isModelInstalled(PrivateAIIntegrationService.selectedModel, useCache: false)
             )
             XCTAssertFalse(DictationAIPostProcessingGate.isConfigured(for: .primary, appBundleID: nil))
         }
