@@ -7,6 +7,10 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		1A100000000000000000000A /* LocalCleanupTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A1000000000000000000009 /* LocalCleanupTests.swift */; };
+		1A1000000000000000000006 /* MLXLLM in Frameworks */ = {isa = PBXBuildFile; productRef = 1A1000000000000000000003 /* MLXLLM */; };
+		1A1000000000000000000007 /* MLXLMCommon in Frameworks */ = {isa = PBXBuildFile; productRef = 1A1000000000000000000004 /* MLXLMCommon */; };
+		1A1000000000000000000008 /* Tokenizers in Frameworks */ = {isa = PBXBuildFile; productRef = 1A1000000000000000000005 /* Tokenizers */; };
 		AD1030000000000000000004 /* HoldToMutePresentationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD1030000000000000000003 /* HoldToMutePresentationTests.swift */; };
 		AD1030000000000000000002 /* HoldToMuteTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD1030000000000000000001 /* HoldToMuteTests.swift */; };
 		D63B0F8456B440F1A123B987 /* PronunciationModelRevisionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AFA73C8D5E7647C4AB125DEE /* PronunciationModelRevisionTests.swift */; };
@@ -203,6 +207,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		1A1000000000000000000009 /* LocalCleanupTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalCleanupTests.swift; sourceTree = "<group>"; };
 		AD1030000000000000000003 /* HoldToMutePresentationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HoldToMutePresentationTests.swift; sourceTree = "<group>"; };
 		AD1030000000000000000001 /* HoldToMuteTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HoldToMuteTests.swift; sourceTree = "<group>"; };
 		AFA73C8D5E7647C4AB125DEE /* PronunciationModelRevisionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PronunciationModelRevisionTests.swift; sourceTree = "<group>"; };
@@ -379,6 +384,9 @@
 				7C9A71022F58B00000FB7CAF /* TranscribeCpp in Frameworks */,
 				7CE006BD2E80EBE600DDCCD6 /* AppUpdater in Frameworks */,
 				7C078DA52E3B386A00FB7CAC /* FluidAudio in Frameworks */,
+				1A1000000000000000000006 /* MLXLLM in Frameworks */,
+				1A1000000000000000000007 /* MLXLMCommon in Frameworks */,
+				1A1000000000000000000008 /* Tokenizers in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -546,6 +554,7 @@
 				803000000000000000000001 /* MediaPlaybackServiceTests.swift */,
 				B51800000000000000000001 /* SpokenSendTests.swift */,
 				B51900000000000000000001 /* PrivateAIProviderPromptFormatTests.swift */,
+				1A1000000000000000000009 /* LocalCleanupTests.swift */,
 				B52000000000000000000001 /* PrivateAIDictationTokenBudgetTests.swift */,
 				C0DE63700000000000000001 /* WhisperLanguageSelectionTests.swift */,
 				CACEC0010000000000000001 /* KeychainServiceCacheTests.swift */,
@@ -646,6 +655,9 @@
 				7C9A71012F58B00000FB7CAF /* TranscribeCpp */,
 				7C5AF14A2F15041600DE21B0 /* MediaRemoteAdapter */,
 				2E9B00000000000000000004 /* ZeppelinEmbed */,
+				1A1000000000000000000003 /* MLXLLM */,
+				1A1000000000000000000004 /* MLXLMCommon */,
+				1A1000000000000000000005 /* Tokenizers */,
 			);
 			productName = FluidVoice;
 			productReference = 7C078D8F2E3B339200FB7CAC /* FluidVoice Debug.app */;
@@ -788,6 +800,8 @@
 				7C9A71002F58B00000FB7CAF /* XCRemoteSwiftPackageReference "transcribe-cpp-swift" */,
 				7C5AF1492F15041600DE21B0 /* XCRemoteSwiftPackageReference "mediaremote-adapter" */,
 				2E9B00000000000000000003 /* XCRemoteSwiftPackageReference "zeppelin-embed" */,
+				1A1000000000000000000001 /* XCRemoteSwiftPackageReference "mlx-swift-lm" */,
+				1A1000000000000000000002 /* XCRemoteSwiftPackageReference "swift-transformers" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 7C078D902E3B339200FB7CAC /* Products */;
@@ -953,6 +967,7 @@
 				803000000000000000000002 /* MediaPlaybackServiceTests.swift in Sources */,
 				B51800000000000000000002 /* SpokenSendTests.swift in Sources */,
 				B51900000000000000000002 /* PrivateAIProviderPromptFormatTests.swift in Sources */,
+				1A100000000000000000000A /* LocalCleanupTests.swift in Sources */,
 				C0DE63700000000000000002 /* WhisperLanguageSelectionTests.swift in Sources */,
 				CACEC0010000000000000002 /* KeychainServiceCacheTests.swift in Sources */,
 				0B05F11E000000000000A002 /* SupportedFileExtensionsTests.swift in Sources */,
@@ -1191,7 +1206,7 @@
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				REGISTER_APP_GROUPS = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
-				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) ARCH_ARM64";
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) ARCH_ARM64 PRIVATE_AI_PROVIDER";
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_OBJC_BRIDGING_HEADER = "Sources/Fluid/Fluid-Bridging-Header.h";
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
@@ -1246,7 +1261,7 @@
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				REGISTER_APP_GROUPS = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
-				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) ARCH_ARM64";
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) ARCH_ARM64 PRIVATE_AI_PROVIDER";
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_OBJC_BRIDGING_HEADER = "Sources/Fluid/Fluid-Bridging-Header.h";
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
@@ -1591,6 +1606,22 @@
 				minimumVersion = 1.1.1;
 			};
 		};
+		1A1000000000000000000001 /* XCRemoteSwiftPackageReference "mlx-swift-lm" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/ml-explore/mlx-swift-lm";
+			requirement = {
+				kind = exactVersion;
+				version = 3.32.3;
+			};
+		};
+		1A1000000000000000000002 /* XCRemoteSwiftPackageReference "swift-transformers" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/huggingface/swift-transformers";
+			requirement = {
+				kind = upToNextMinorVersion;
+				minimumVersion = 1.3.3;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -1638,6 +1669,21 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 7C9A71002F58B00000FB7CAF /* XCRemoteSwiftPackageReference "transcribe-cpp-swift" */;
 			productName = TranscribeCpp;
+		};
+		1A1000000000000000000003 /* MLXLLM */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 1A1000000000000000000001 /* XCRemoteSwiftPackageReference "mlx-swift-lm" */;
+			productName = MLXLLM;
+		};
+		1A1000000000000000000004 /* MLXLMCommon */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 1A1000000000000000000001 /* XCRemoteSwiftPackageReference "mlx-swift-lm" */;
+			productName = MLXLMCommon;
+		};
+		1A1000000000000000000005 /* Tokenizers */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 1A1000000000000000000002 /* XCRemoteSwiftPackageReference "swift-transformers" */;
+			productName = Tokenizers;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};
