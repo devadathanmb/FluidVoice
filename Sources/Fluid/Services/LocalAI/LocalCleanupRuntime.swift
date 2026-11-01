@@ -28,21 +28,47 @@ actor LocalCleanupRuntime {
         let cache: [KVCache]
     }
 
-    private var context: ModelContext?
-    private var loadedModelID: String?
+    /// Built by a detached load task and handed to the actor once; never shared after.
+    private struct LoadedModel: @unchecked Sendable {
+        let id: String
+        let context: ModelContext
+        let stopTokenIDs: Set<Int>
+    }
+
+    private struct PendingLoad {
+        let id: String
+        let generation: Int
+        let task: Task<LoadedModel, Error>
+    }
+
+    private var loaded: LoadedModel?
+    private var pendingLoad: PendingLoad?
+    /// Bumped by `unload()` so a load that finishes afterwards is discarded instead
+    /// of making the model resident again behind the caller's back.
+    private var generation = 0
     private var prefix: PrefixCache?
-    private var stopTokenIDs: Set<Int> = []
 
     /// Bound MLX's reusable buffer pool so an idle model does not grow resident
     /// memory past its weights; dictation runs alongside other dev tools.
     private static let bufferCacheLimit = 256 << 20
 
     var currentModelID: String? {
-        self.loadedModelID
+        self.loaded?.id
     }
 
+    var loadingModelID: String? {
+        self.pendingLoad?.id
+    }
+
+    /// Load `model`, or join a load of it that is already running. The actor is
+    /// reentrant across the weight load, so concurrent prewarm and dictation
+    /// requests must share one load instead of reading the weights twice.
     func load(_ model: LocalCleanupModel) async throws {
-        if self.loadedModelID == model.id, self.context != nil {
+        if self.loaded?.id == model.id {
+            return
+        }
+        if let pending = self.pendingLoad, pending.id == model.id {
+            try await self.finishLoad(pending)
             return
         }
         guard LocalCleanupModelStore.isInstalled(model) else {
@@ -52,26 +78,22 @@ actor LocalCleanupRuntime {
         Memory.cacheLimit = Self.bufferCacheLimit
 
         let directory = LocalCleanupModelStore.directory(for: model)
-        let context = try await loadModel(from: directory, using: TransformersTokenizerLoader())
-        var stops = Set<Int>()
-        for token in ["<|im_end|>", "<|endoftext|>", "<end_of_turn>"] {
-            if let id = context.tokenizer.convertTokenToId(token) {
-                stops.insert(id)
+        let pending = PendingLoad(
+            id: model.id,
+            generation: self.generation,
+            task: Task.detached(priority: .userInitiated) {
+                try await Self.loadModel(id: model.id, from: directory)
             }
-        }
-        if let eos = context.tokenizer.eosTokenId {
-            stops.insert(eos)
-        }
-        stops.formUnion(context.configuration.eosTokenIds)
-
-        self.context = context
-        self.loadedModelID = model.id
-        self.stopTokenIDs = stops
+        )
+        self.pendingLoad = pending
+        try await self.finishLoad(pending)
     }
 
     func unload() {
-        self.context = nil
-        self.loadedModelID = nil
+        self.generation += 1
+        self.pendingLoad?.task.cancel()
+        self.pendingLoad = nil
+        self.loaded = nil
         self.prefix = nil
         Memory.clearCache()
     }
@@ -79,23 +101,24 @@ actor LocalCleanupRuntime {
     /// Prefill the instruction prefix and compile decode kernels ahead of the
     /// first dictation, which otherwise pays over a second of Metal warmup.
     func prewarm(vocabulary: [LocalCleanupPrompt.VocabularyTerm]) throws {
-        guard let context else { return }
-        let prefix = try self.prefixCache(context: context, vocabulary: vocabulary)
-        let tokens = try self.cleanupTokens(context, transcript: "ok", vocabulary: vocabulary)
-        _ = try self.generate(context: context, tokens: tokens, prefix: prefix, maxTokens: 2, onText: nil)
+        guard let loaded else { return }
+        let prefix = try self.prefixCache(loaded.context, vocabulary: vocabulary)
+        let tokens = try self.cleanupTokens(loaded.context, transcript: "ok", vocabulary: vocabulary)
+        _ = try self.generate(loaded, tokens: tokens, prefix: prefix, maxTokens: 2, onText: nil)
     }
 
+    /// `onText` receives each newly decoded piece, not the accumulated text.
     func cleanUp(
         _ transcript: String,
         vocabulary: [LocalCleanupPrompt.VocabularyTerm],
         maxOutputTokens: Int,
         onText: (@Sendable (String) -> Void)?
     ) throws -> Result {
-        guard let context else { throw LocalCleanupError.modelNotInstalled("none loaded") }
-        let prefix = try self.prefixCache(context: context, vocabulary: vocabulary)
-        let tokens = try self.cleanupTokens(context, transcript: transcript, vocabulary: vocabulary)
+        guard let loaded else { throw LocalCleanupError.modelNotInstalled("none loaded") }
+        let prefix = try self.prefixCache(loaded.context, vocabulary: vocabulary)
+        let tokens = try self.cleanupTokens(loaded.context, transcript: transcript, vocabulary: vocabulary)
         return try self.generate(
-            context: context,
+            loaded,
             tokens: tokens,
             prefix: prefix,
             maxTokens: maxOutputTokens,
@@ -108,10 +131,10 @@ actor LocalCleanupRuntime {
         maxOutputTokens: Int,
         onText: (@Sendable (String) -> Void)?
     ) throws -> Result {
-        guard let context else { throw LocalCleanupError.modelNotInstalled("none loaded") }
+        guard let loaded else { throw LocalCleanupError.modelNotInstalled("none loaded") }
         return try self.generate(
-            context: context,
-            tokens: self.render(context, messages),
+            loaded,
+            tokens: self.render(loaded.context, messages),
             prefix: nil,
             maxTokens: maxOutputTokens,
             onText: onText
@@ -119,6 +142,40 @@ actor LocalCleanupRuntime {
     }
 
     // MARK: - Internals
+
+    private func finishLoad(_ pending: PendingLoad) async throws {
+        let model: LoadedModel
+        do {
+            model = try await pending.task.value
+        } catch {
+            if self.pendingLoad?.generation == pending.generation, self.pendingLoad?.id == pending.id {
+                self.pendingLoad = nil
+            }
+            throw error
+        }
+        // `unload()` or a load of another model ran while the weights were loading.
+        guard self.generation == pending.generation else { throw CancellationError() }
+        if self.loaded?.id != model.id {
+            self.loaded = model
+            self.prefix = nil
+        }
+        self.pendingLoad = nil
+    }
+
+    private static func loadModel(id: String, from directory: URL) async throws -> LoadedModel {
+        let context = try await MLXLMCommon.loadModel(from: directory, using: TransformersTokenizerLoader())
+        var stops = Set<Int>()
+        for token in ["<|im_end|>", "<|endoftext|>", "<end_of_turn>"] {
+            if let id = context.tokenizer.convertTokenToId(token) {
+                stops.insert(id)
+            }
+        }
+        if let eos = context.tokenizer.eosTokenId {
+            stops.insert(eos)
+        }
+        stops.formUnion(context.configuration.eosTokenIds)
+        return LoadedModel(id: id, context: context, stopTokenIDs: stops)
+    }
 
     private func render(_ context: ModelContext, _ messages: [[String: any Sendable]]) throws -> [Int] {
         try context.tokenizer.applyChatTemplate(
@@ -140,12 +197,13 @@ actor LocalCleanupRuntime {
     /// minus one token so a boundary merge can never land inside the cache.
     /// Rebuilt only when the vocabulary changes.
     private func prefixCache(
-        context: ModelContext,
+        _ context: ModelContext,
         vocabulary: [LocalCleanupPrompt.VocabularyTerm]
     ) throws -> PrefixCache? {
         if let prefix, prefix.vocabulary == vocabulary {
             return prefix
         }
+        self.prefix = nil
         let a = try self.cleanupTokens(context, transcript: "AAAA", vocabulary: vocabulary)
         let b = try self.cleanupTokens(context, transcript: "BBBB", vocabulary: vocabulary)
         var shared = 0
@@ -165,7 +223,7 @@ actor LocalCleanupRuntime {
     }
 
     private func generate(
-        context: ModelContext,
+        _ loaded: LoadedModel,
         tokens: [Int],
         prefix: PrefixCache?,
         maxTokens: Int,
@@ -174,14 +232,14 @@ actor LocalCleanupRuntime {
         let start = Date()
         var cache: [KVCache] = []
         var feed = tokens
-        if let prefix, tokens.count > prefix.tokens.count, Array(tokens.prefix(prefix.tokens.count)) == prefix.tokens {
+        if let prefix, tokens.count > prefix.tokens.count, tokens.starts(with: prefix.tokens) {
             cache = prefix.cache.map { $0.copy() }
             feed = Array(tokens.dropFirst(prefix.tokens.count))
         }
 
         var iterator = try TokenIterator(
             input: LMInput(tokens: MLXArray(feed.map(Int32.init))),
-            model: context.model,
+            model: loaded.context.model,
             cache: cache.isEmpty ? nil : cache,
             processor: nil,
             sampler: ArgMaxSampler(),
@@ -189,30 +247,32 @@ actor LocalCleanupRuntime {
         )
         let prefillDone = Date()
 
-        var detokenizer = NaiveStreamingDetokenizer(tokenizer: context.tokenizer)
-        var text = ""
-        var generated = 0
+        var detokenizer = onText.map { _ in NaiveStreamingDetokenizer(tokenizer: loaded.context.tokenizer) }
+        var generatedTokens: [Int] = []
         while let token = iterator.next() {
-            if self.stopTokenIDs.contains(token) {
+            if loaded.stopTokenIDs.contains(token) {
                 break
             }
             try Task.checkCancellation()
-            generated += 1
-            detokenizer.append(token: token)
-            if let piece = detokenizer.next() {
-                text += piece
-                onText?(text)
+            generatedTokens.append(token)
+            if let onText {
+                detokenizer?.append(token: token)
+                if let piece = detokenizer?.next(), !piece.isEmpty {
+                    onText(piece)
+                }
             }
         }
         let end = Date()
         let decodeSeconds = end.timeIntervalSince(prefillDone)
+        // Decode once at the end so the result never depends on streaming segmentation.
+        let text = loaded.context.tokenizer.decode(tokenIds: generatedTokens, skipSpecialTokens: true)
         return Result(
             text: text,
             promptTokens: tokens.count,
-            generatedTokens: generated,
+            generatedTokens: generatedTokens.count,
             prefillMilliseconds: Int(prefillDone.timeIntervalSince(start) * 1000),
             totalMilliseconds: Int(end.timeIntervalSince(start) * 1000),
-            tokensPerSecond: decodeSeconds > 0 ? Double(generated) / decodeSeconds : 0
+            tokensPerSecond: decodeSeconds > 0 ? Double(generatedTokens.count) / decodeSeconds : 0
         )
     }
 }

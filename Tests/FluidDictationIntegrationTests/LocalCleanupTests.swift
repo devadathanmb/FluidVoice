@@ -74,6 +74,21 @@ final class LocalCleanupPromptTests: XCTestCase {
         XCTAssertEqual(PrivateAIModelRegistry.defaultModelID, LocalCleanupModelCatalog.defaultModel.id)
     }
 
+    func testReusedFilesMustMatchTheirPinnedHash() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("fv-verify-\(UUID().uuidString)")
+        let data = Data("weights".utf8)
+        try data.write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let hex = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        let size = Int64(data.count)
+
+        XCTAssertTrue(LocalCleanupModelStore.isVerified(url, as: .init(name: "w", byteCount: size, sha256: hex)))
+        XCTAssertFalse(LocalCleanupModelStore.isVerified(url, as: .init(name: "w", byteCount: size, sha256: String(repeating: "0", count: 64))))
+        XCTAssertFalse(LocalCleanupModelStore.isVerified(url, as: .init(name: "w", byteCount: size + 1, sha256: hex)))
+        // Unpinned files are always downloaded again rather than trusted by size.
+        XCTAssertFalse(LocalCleanupModelStore.isVerified(url, as: .init(name: "w", byteCount: size, sha256: nil)))
+    }
+
     func testOtherInstalledDirectoriesExcludeCurrentModel() throws {
         let model = LocalCleanupModelCatalog.defaultModel
         let root = LocalCleanupModelStore.rootDirectory
@@ -111,7 +126,11 @@ final class LocalCleanupRuntimeE2ETests: XCTestCase {
             ("why is tail scale causing this DNS issue", ["tailscale"], ["tail scale"]),
         ]
         for testCase in cases {
-            let result = try await runtime.cleanUp(testCase.input, vocabulary: vocabulary, maxOutputTokens: 128, onText: nil)
+            let streamed = StreamedText()
+            let result = try await runtime.cleanUp(
+                testCase.input, vocabulary: vocabulary, maxOutputTokens: 128, onText: { streamed.append($0) }
+            )
+            XCTAssertEqual(streamed.text, result.text, "streamed pieces must add up to the result exactly once")
             let verdict = LocalCleanupPrompt.check(output: result.text, transcript: testCase.input)
             guard case let .accept(output) = verdict else {
                 XCTFail("guard rejected \(result.text) for \(testCase.input)")
@@ -127,5 +146,51 @@ final class LocalCleanupRuntimeE2ETests: XCTestCase {
             print("LocalCleanupE2E \(result.totalMilliseconds)ms \(Int(result.tokensPerSecond)) tok/s: \(output)")
         }
         await runtime.unload()
+    }
+
+    func testConcurrentLoadsShareOneLoadAndUnloadWins() async throws {
+        try XCTSkipUnless(
+            ProcessInfo.processInfo.environment["FLUID_LOCAL_CLEANUP_E2E"] == "1",
+            "Set FLUID_LOCAL_CLEANUP_E2E=1 to run the local cleanup model end to end."
+        )
+        let model = LocalCleanupModelCatalog.defaultModel
+        _ = try await LocalCleanupModelStore.install(model, progress: nil)
+        let runtime = LocalCleanupRuntime.shared
+        await runtime.unload()
+
+        async let first: Void = runtime.load(model)
+        async let second: Void = runtime.load(model)
+        _ = try await (first, second)
+        let loadedID = await runtime.currentModelID
+        XCTAssertEqual(loadedID, model.id)
+
+        // An unload during a load must leave nothing resident.
+        await runtime.unload()
+        let pending = Task { try await runtime.load(model) }
+        while await runtime.loadingModelID == nil, await runtime.currentModelID == nil {
+            await Task.yield()
+        }
+        let caughtInFlight = await runtime.loadingModelID == model.id
+        await runtime.unload()
+        do {
+            try await pending.value
+        } catch is CancellationError {}
+        let residentID = await runtime.currentModelID
+        XCTAssertTrue(caughtInFlight, "the load finished before the test could interrupt it")
+        XCTAssertNil(residentID, "a load that finished after unload must not stay resident")
+        await runtime.unload()
+    }
+}
+
+private final nonisolated class StreamedText: @unchecked Sendable {
+    private let lock = NSLock()
+    private var pieces = ""
+
+    var text: String {
+        self.lock.withLock { self.pieces }
+    }
+
+    func append(_ piece: String) {
+        self.lock.withLock { self.pieces += piece }
     }
 }

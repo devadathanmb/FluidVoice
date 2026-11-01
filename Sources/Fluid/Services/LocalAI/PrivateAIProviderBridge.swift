@@ -140,6 +140,9 @@ nonisolated struct LocalCleanupIntegration: PrivateAIIntegrationProviding {
         if await self.runtime.currentModelID == id {
             return PrivateAIStatus(state: .ready, message: nil)
         }
+        if await self.runtime.loadingModelID == id {
+            return PrivateAIStatus(state: .loading, message: nil)
+        }
         guard let local = self.localModel(id: id), LocalCleanupModelStore.isInstalled(local) else {
             return PrivateAIStatus(state: .missingModel, message: "Download the model to use local cleanup.")
         }

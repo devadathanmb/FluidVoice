@@ -121,7 +121,7 @@ def _chat(system: str | None, examples: list[tuple[str, str]], user: str) -> lis
 
 
 def messages(variant: str, transcript: str) -> list[dict]:
-    """Chat messages for one prompt variant. The Swift app mirrors `tech_vocab`."""
+    """Chat messages for one prompt variant. The Swift app mirrors `utter_vocab`."""
     if variant == "raw":
         # Bare transcript. Approximates a fine-tuned model's training format.
         return _chat(None, [], transcript)

@@ -24,8 +24,10 @@ nonisolated enum LocalCleanupModelStore {
         return revision.trimmingCharacters(in: .whitespacesAndNewlines) == model.revision
     }
 
-    /// Download any missing files and verify them. A file already on disk is reused
-    /// when its size matches; weights are always hash-checked as they arrive.
+    /// Download any missing files and verify them. Only hash-pinned files are reused
+    /// from disk, and only after their hash matches again, so a revision bump that
+    /// keeps a file's size can never leave stale bytes behind. Small unhashed files
+    /// are always fetched fresh.
     static func install(
         _ model: LocalCleanupModel,
         progress: (@Sendable (_ written: Int64, _ expected: Int64) async -> Void)?
@@ -44,7 +46,7 @@ nonisolated enum LocalCleanupModelStore {
         for file in model.files {
             try Task.checkCancellation()
             let destination = directory.appendingPathComponent(file.name)
-            if self.fileSize(destination) == file.byteCount {
+            if self.isVerified(destination, as: file) {
                 completed += file.byteCount
                 await progress?(completed, expected)
                 continue
@@ -59,7 +61,7 @@ nonisolated enum LocalCleanupModelStore {
             guard self.fileSize(temporary) == file.byteCount else {
                 throw LocalCleanupError.sizeMismatch(file.name)
             }
-            if let sha256 = file.sha256, try self.sha256(of: temporary) != sha256 {
+            if file.sha256 != nil, !self.isVerified(temporary, as: file) {
                 throw LocalCleanupError.checksumMismatch(file.name)
             }
             try? fileManager.removeItem(at: destination)
@@ -92,6 +94,12 @@ nonisolated enum LocalCleanupModelStore {
     }
 
     // MARK: - Helpers
+
+    /// True when `url` has `file`'s size and pinned hash. Unpinned files never verify.
+    static func isVerified(_ url: URL, as file: LocalCleanupModel.File) -> Bool {
+        guard let expected = file.sha256, self.fileSize(url) == file.byteCount else { return false }
+        return (try? self.sha256(of: url)) == expected
+    }
 
     static func fileSize(_ url: URL) -> Int64? {
         (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.int64Value
@@ -128,18 +136,31 @@ nonisolated enum LocalCleanupError: LocalizedError {
     }
 }
 
-/// URLSession download with byte progress, delivered to an async handler.
+/// URLSession download with byte progress, delivered in order to an async handler.
 private final nonisolated class FileDownloader: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
-    private let onProgress: @Sendable (Int64) async -> Void
+    private let progress: AsyncStream<Int64>.Continuation
     private var lastReported = Date.distantPast
     private let lock = NSLock()
 
-    private init(onProgress: @escaping @Sendable (Int64) async -> Void) {
-        self.onProgress = onProgress
+    private init(progress: AsyncStream<Int64>.Continuation) {
+        self.progress = progress
     }
 
     static func download(_ url: URL, onProgress: @escaping @Sendable (Int64) async -> Void) async throws -> URL {
-        let delegate = FileDownloader(onProgress: onProgress)
+        // One consumer drains a newest-only stream, so updates never arrive out of
+        // order and the last one lands before this download returns.
+        let (stream, continuation) = AsyncStream.makeStream(of: Int64.self, bufferingPolicy: .bufferingNewest(1))
+        let reporter = Task {
+            for await written in stream {
+                await onProgress(written)
+            }
+        }
+        defer {
+            continuation.finish()
+            reporter.cancel()
+        }
+
+        let delegate = FileDownloader(progress: continuation)
         let (location, response) = try await URLSession.shared.download(from: url, delegate: delegate)
         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
             try? FileManager.default.removeItem(at: location)
@@ -148,6 +169,8 @@ private final nonisolated class FileDownloader: NSObject, URLSessionDownloadDele
         // The system deletes `location` when this returns; move it somewhere we own.
         let owned = FileManager.default.temporaryDirectory.appendingPathComponent("fv-model-\(UUID().uuidString)")
         try FileManager.default.moveItem(at: location, to: owned)
+        continuation.finish()
+        await reporter.value
         return owned
     }
 
@@ -163,8 +186,8 @@ private final nonisolated class FileDownloader: NSObject, URLSessionDownloadDele
             self.lastReported = now
             return true
         }
-        guard shouldReport else { return }
-        let handler = self.onProgress
-        Task { await handler(totalBytesWritten) }
+        if shouldReport {
+            self.progress.yield(totalBytesWritten)
+        }
     }
 }
