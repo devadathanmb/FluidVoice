@@ -156,6 +156,71 @@ final class LocalCleanupRuntimeE2ETests: XCTestCase {
         await runtime.unload()
     }
 
+    /// The weights must report byte progress while downloading, not only per file.
+    func testWeightsDownloadReportsProgressAndCancels() async throws {
+        try XCTSkipUnless(
+            ProcessInfo.processInfo.environment["FLUID_LOCAL_CLEANUP_E2E"] == "1",
+            "Set FLUID_LOCAL_CLEANUP_E2E=1 to run the local cleanup model end to end."
+        )
+        let weights = try XCTUnwrap(LocalCleanupModelCatalog.defaultModel.files.first { $0.name == "model.safetensors" })
+        let probe = Self.probeModel(files: [weights])
+        defer { try? LocalCleanupModelStore.remove(probe) }
+
+        let (progress, report) = AsyncStream.makeStream(of: Int64.self)
+        let install = Task {
+            try await LocalCleanupModelStore.install(probe) { written, _ in report.yield(written) }
+        }
+        let firstBytes = Task {
+            for await written in progress where written > 0 {
+                return written
+            }
+            return Int64(0)
+        }
+        let timeout = Task {
+            try await Task.sleep(for: .seconds(30))
+            report.finish()
+        }
+        let written = await firstBytes.value
+        timeout.cancel()
+        install.cancel()
+        XCTAssertGreaterThan(written, 0, "no byte progress within 30 s")
+        XCTAssertLessThan(written, weights.byteCount)
+        do {
+            _ = try await install.value
+            XCTFail("a cancelled download must not install")
+        } catch {}
+        XCTAssertFalse(LocalCleanupModelStore.isInstalled(probe))
+    }
+
+    /// A full download moves the file into place, verifies its hash, and marks the model ready.
+    func testSmallPinnedFileDownloadInstalls() async throws {
+        try XCTSkipUnless(
+            ProcessInfo.processInfo.environment["FLUID_LOCAL_CLEANUP_E2E"] == "1",
+            "Set FLUID_LOCAL_CLEANUP_E2E=1 to run the local cleanup model end to end."
+        )
+        let tokenizer = try XCTUnwrap(LocalCleanupModelCatalog.defaultModel.files.first { $0.name == "tokenizer.json" })
+        let probe = Self.probeModel(files: [tokenizer])
+        defer { try? LocalCleanupModelStore.remove(probe) }
+
+        let directory = try await LocalCleanupModelStore.install(probe, progress: nil)
+        XCTAssertTrue(LocalCleanupModelStore.isInstalled(probe))
+        XCTAssertTrue(LocalCleanupModelStore.isVerified(directory.appendingPathComponent(tokenizer.name), as: tokenizer))
+    }
+
+    private static func probeModel(files: [LocalCleanupModel.File]) -> LocalCleanupModel {
+        let base = LocalCleanupModelCatalog.defaultModel
+        return LocalCleanupModel(
+            id: "local-test-download-\(UUID().uuidString.lowercased())",
+            displayName: "probe",
+            detail: "",
+            parameterCount: "",
+            recommendedMemoryGB: 0,
+            repository: base.repository,
+            revision: base.revision,
+            files: files
+        )
+    }
+
     func testConcurrentLoadsShareOneLoadAndUnloadWins() async throws {
         try XCTSkipUnless(
             ProcessInfo.processInfo.environment["FLUID_LOCAL_CLEANUP_E2E"] == "1",

@@ -137,10 +137,16 @@ nonisolated enum LocalCleanupError: LocalizedError {
 }
 
 /// URLSession download with byte progress, delivered in order to an async handler.
+///
+/// Uses a session-level delegate and a classic download task: the async
+/// `URLSession.download(from:delegate:)` never delivers `didWriteData` to its task
+/// delegate, so progress froze at the small files while the weights downloaded.
 private final nonisolated class FileDownloader: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
     private let progress: AsyncStream<Int64>.Continuation
-    private var lastReported = Date.distantPast
     private let lock = NSLock()
+    private var lastReported = Date.distantPast
+    private var continuation: CheckedContinuation<URL, Error>?
+    private var result: Result<URL, Error>?
 
     private init(progress: AsyncStream<Int64>.Continuation) {
         self.progress = progress
@@ -155,26 +161,62 @@ private final nonisolated class FileDownloader: NSObject, URLSessionDownloadDele
                 await onProgress(written)
             }
         }
-        defer {
+        let delegate = FileDownloader(progress: continuation)
+        let session = URLSession(configuration: .default, delegate: delegate, delegateQueue: nil)
+        // A session retains its delegate until invalidated.
+        defer { session.finishTasksAndInvalidate() }
+        let task = session.downloadTask(with: url)
+
+        do {
+            let file = try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation { (resume: CheckedContinuation<URL, Error>) in
+                    delegate.lock.withLock { delegate.continuation = resume }
+                    task.resume()
+                }
+            } onCancel: {
+                task.cancel()
+            }
+            continuation.finish()
+            await reporter.value
+            return file
+        } catch {
             continuation.finish()
             reporter.cancel()
+            throw error
         }
-
-        let delegate = FileDownloader(progress: continuation)
-        let (location, response) = try await URLSession.shared.download(from: url, delegate: delegate)
-        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-            try? FileManager.default.removeItem(at: location)
-            throw LocalCleanupError.httpStatus(http.statusCode)
-        }
-        // The system deletes `location` when this returns; move it somewhere we own.
-        let owned = FileManager.default.temporaryDirectory.appendingPathComponent("fv-model-\(UUID().uuidString)")
-        try FileManager.default.moveItem(at: location, to: owned)
-        continuation.finish()
-        await reporter.value
-        return owned
     }
 
-    func urlSession(_: URLSession, downloadTask _: URLSessionDownloadTask, didFinishDownloadingTo _: URL) {}
+    func urlSession(_: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
+        let outcome: Result<URL, Error>
+        if let http = downloadTask.response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            outcome = .failure(LocalCleanupError.httpStatus(http.statusCode))
+        } else {
+            // The system deletes `location` when this returns; move it somewhere we own.
+            let owned = FileManager.default.temporaryDirectory.appendingPathComponent("fv-model-\(UUID().uuidString)")
+            do {
+                try FileManager.default.moveItem(at: location, to: owned)
+                outcome = .success(owned)
+            } catch {
+                outcome = .failure(error)
+            }
+        }
+        self.lock.withLock { self.result = outcome }
+    }
+
+    func urlSession(_: URLSession, task _: URLSessionTask, didCompleteWithError error: Error?) {
+        let (resume, outcome): (CheckedContinuation<URL, Error>?, Result<URL, Error>?) = self.lock.withLock {
+            defer { self.continuation = nil }
+            return (self.continuation, self.result)
+        }
+        if let error {
+            if case let .success(file) = outcome {
+                try? FileManager.default.removeItem(at: file)
+            }
+            resume?.resume(throwing: error)
+        } else {
+            resume?.resume(with: outcome ?? .failure(URLError(.unknown)))
+        }
+    }
 
     func urlSession(
         _: URLSession, downloadTask _: URLSessionDownloadTask, didWriteData _: Int64,

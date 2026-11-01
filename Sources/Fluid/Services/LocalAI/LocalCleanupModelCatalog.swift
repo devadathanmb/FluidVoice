@@ -44,7 +44,7 @@ nonisolated enum LocalCleanupModelCatalog {
     /// its Q6_K GGUF to MLX 6-bit with `tools/local-ai-eval/convert_gguf.py`.
     static let utter = LocalCleanupModel(
         id: "local-utter-qwen3-1.7b",
-        displayName: "Utter Cleanup 1.7B (local)",
+        displayName: "Utter 1.7B",
         detail: "Dictation cleanup tuned to keep your words. 1.7B, about 1.5 GB in memory.",
         parameterCount: "1.7B 6-bit",
         recommendedMemoryGB: 8,
