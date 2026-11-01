@@ -1,12 +1,23 @@
 # FluidVoice Freedom Fork
 
-## Purpose And Invariants
+`freedom` adds two things to FluidVoice: a Carbon hotkey fallback for managed Macs where Accessibility (AX) may be unavailable, and on-device AI post-processing that replaces upstream's private Fluid Intelligence build.
 
-- `freedom` supports managed macOS machines where Accessibility (AX) permission may be unavailable. Describe this as a Carbon hotkey fallback, never as an AX bypass.
+## Accessibility Invariants
+
+- Describe the no-AX path as a Carbon hotkey fallback, never as an AX bypass.
 - Without AX, Carbon supports eligible modified keyboard chords only. Mouse, Fn, and modifier-only shortcuts remain unavailable.
 - AX is still required for cross-app text selection, focus capture/restoration, typing, and paste insertion. `TypingService` and `TextSelectionService` must stop when `AXIsProcessTrusted()` is false.
 - Clipboard copying is independent of AX and uses `NSPasteboard` through `ClipboardService`. `Copy to Clipboard` is the no-AX handoff; it does not insert text into another app.
 - Without AX, completed dictation uses clipboard-only delivery, not a failed paste attempt or an Accessibility warning. Keep sandbox/history-only output free of clipboard side effects, and do not arm Spoken Send without AX.
+
+## Local AI Post-Processing
+
+- `Sources/Fluid/Services/LocalAI/` implements upstream's private provider seam (`PrivateAIProviderBridge`, compiled with `PRIVATE_AI_PROVIDER` on the app target only). Keep local AI changes inside that seam so release merges stay clean.
+- `LocalCleanupRuntime` runs mlx-swift-lm in process and must stay light beside dev tools: one resident model, a capped MLX buffer cache, and the instruction prefix prefilled once per vocabulary.
+- `LocalCleanupModelCatalog` downloads standard MLX checkpoints pinned to a Hugging Face revision, size-checked and SHA-256-checked. Publish converted or fine-tuned weights to Hugging Face; do not add on-device weight conversion.
+- `LocalCleanupPrompt.systemPrompt` is the model's training prompt byte for byte, pinned by a SHA-256 test. Change prompt and model together and keep `tools/local-ai-eval/prompts.py` in sync.
+- Custom dictionary entries become the prompt vocabulary. The output guard returns the raw transcript when the model answers, summarizes, truncates, or invents text; keep that fallback.
+- Choose or change models with `tools/local-ai-eval` (uv, Python 3.12) and judge them on the held-out real dictation history in its `private/`, not only synthetic cases. Personal data and history results are git-ignored; never commit them.
 
 ## Upstream Integration
 
@@ -32,13 +43,16 @@
 - `fluidApp.swift` starts the app; `AppDelegate.swift` manages startup and shutdown; `ContentView.swift` coordinates dictation completion and output.
 - `AppServices.swift` owns the main-actor service graph. `GlobalHotkeyManager.swift` owns AX and Carbon hotkeys. `TypingService.swift` owns AX-gated insertion.
 - `Sources/CoreAudioCaptureSupport` is the C capture target used by `DirectCoreAudioInput`.
+- `PrivateAIIntegrationService.swift` routes AI post-processing to the private provider; `DictationPostProcessingService.swift` picks between it and remote providers.
 - The app targets macOS 15+ and builds through `Fluid.xcodeproj`; Swift package versions are locked in `Package.resolved`.
 
 ## Verification And Distribution
 
 - Never commit personal signing-team changes. Build and test unsigned with `CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO`.
-- Run `scripts/format-and-lint.sh` for Swift changes. It formats `Sources/` before running strict SwiftLint.
+- Run `scripts/format-and-lint.sh` for Swift changes. It formats `Sources/` before running strict SwiftLint. If a newer local SwiftFormat rewrites files you did not touch, revert those and keep only your changes.
+- MLX needs Xcode's Metal Toolchain: `xcodebuild -downloadComponent MetalToolchain`.
 - Run tests with `xcodebuild test -project Fluid.xcodeproj -scheme Fluid -destination 'platform=macOS' CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO`.
 - Keep the Tiny Whisper E2E test for local validation. CI may skip it because its output is nondeterministic on hosted macOS.
+- The local cleanup E2E test downloads and runs the default model only with `TEST_RUNNER_FLUID_LOCAL_CLEANUP_E2E=1`.
 - `./build.sh` creates the public unsigned OSS build. `./build.sh fi` depends on the untracked private `build_with_FI_incremental.sh`; do not assume it exists.
 - `.github/workflows/personal-macos-dmg.yml` must remain manually dispatched, unsigned, ARM64, retain the hosted Whisper exclusion, and upload `FluidVoice-freedom-arm64.dmg` for 30 days.
