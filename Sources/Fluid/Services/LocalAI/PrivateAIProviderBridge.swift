@@ -113,6 +113,12 @@ nonisolated struct LocalCleanupIntegration: PrivateAIIntegrationProviding {
         return [LocalCleanupModelStore.directory(for: local)]
     }
 
+    /// Lets the app reclaim checkpoints from models that left the catalog.
+    func inactiveInstalledModelURLs(keeping model: PrivateAIRegisteredModel) -> [URL] {
+        guard let local = self.localModel(id: model.id) else { return [] }
+        return LocalCleanupModelStore.otherInstalledDirectories(keeping: local)
+    }
+
     func prepareModel(
         _ model: PrivateAIRegisteredModel,
         progressHandler: PrivateAIModelDownloadProgressHandler?

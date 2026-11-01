@@ -1,8 +1,7 @@
 import CryptoKit
 import Foundation
-import MLX
 
-/// Downloads, verifies, and prepares local cleanup checkpoints on disk.
+/// Downloads and verifies local cleanup checkpoints on disk.
 nonisolated enum LocalCleanupModelStore {
     static let readyMarker = ".fluidvoice-ready"
 
@@ -25,7 +24,8 @@ nonisolated enum LocalCleanupModelStore {
         return revision.trimmingCharacters(in: .whitespacesAndNewlines) == model.revision
     }
 
-    /// Download any missing files, verify them, and convert the checkpoint if needed.
+    /// Download any missing files and verify them. A file already on disk is reused
+    /// when its size matches; weights are always hash-checked as they arrive.
     static func install(
         _ model: LocalCleanupModel,
         progress: (@Sendable (_ written: Int64, _ expected: Int64) async -> Void)?
@@ -44,10 +44,7 @@ nonisolated enum LocalCleanupModelStore {
         for file in model.files {
             try Task.checkCancellation()
             let destination = directory.appendingPathComponent(file.name)
-            // A split checkpoint no longer matches the remote hash; the ready marker
-            // is missing here, so always re-fetch weights to restart from a clean state.
-            let reusable = file.name != "model.safetensors" || !model.splitsFusedLinearAttention
-            if reusable, self.fileSize(destination) == file.byteCount {
+            if self.fileSize(destination) == file.byteCount {
                 completed += file.byteCount
                 await progress?(completed, expected)
                 continue
@@ -71,9 +68,6 @@ nonisolated enum LocalCleanupModelStore {
             await progress?(completed, expected)
         }
 
-        if model.splitsFusedLinearAttention {
-            try self.splitFusedLinearAttention(in: directory)
-        }
         try model.revision.write(
             to: directory.appendingPathComponent(self.readyMarker), atomically: true, encoding: .utf8
         )
@@ -87,53 +81,14 @@ nonisolated enum LocalCleanupModelStore {
         }
     }
 
-    // MARK: - Fused projection split
-
-    /// FluidDecode stores `linear_attn.in_proj` rows as [qkv | z | b | a]. Affine
-    /// quantization groups run along the input dimension, so row slices are exact.
-    static func splitFusedLinearAttention(in directory: URL) throws {
-        let weightsURL = directory.appendingPathComponent("model.safetensors")
-        let configURL = directory.appendingPathComponent("config.json")
-        let config = try JSONSerialization.jsonObject(with: Data(contentsOf: configURL)) as? [String: Any] ?? [:]
-        let text = config["text_config"] as? [String: Any] ?? config
-        guard let keyHeads = text["linear_num_key_heads"] as? Int,
-              let valueHeads = text["linear_num_value_heads"] as? Int,
-              let keyDim = text["linear_key_head_dim"] as? Int,
-              let valueDim = text["linear_value_head_dim"] as? Int
-        else { throw LocalCleanupError.unsupportedCheckpoint("missing linear attention dimensions") }
-
-        let sizes: [(String, Int)] = [
-            ("qkv", 2 * keyHeads * keyDim + valueHeads * valueDim),
-            ("z", valueHeads * valueDim),
-            ("b", valueHeads),
-            ("a", valueHeads),
-        ]
-        let totalRows = sizes.reduce(0) { $0 + $1.1 }
-
-        let weights = try loadArrays(url: weightsURL)
-        let marker = "linear_attn.in_proj."
-        guard weights.keys.contains(where: { $0.contains(marker) }) else { return }
-
-        var converted: [String: MLXArray] = [:]
-        for (key, value) in weights {
-            guard let range = key.range(of: marker) else {
-                converted[key] = value
-                continue
-            }
-            guard value.dim(0) == totalRows else {
-                throw LocalCleanupError.unsupportedCheckpoint("\(key) has \(value.dim(0)) rows, expected \(totalRows)")
-            }
-            let prefix = key[..<range.lowerBound]
-            let suffix = key[range.upperBound...]
-            var offset = 0
-            for (name, rows) in sizes {
-                converted["\(prefix)linear_attn.in_proj_\(name).\(suffix)"] = value[offset..<offset + rows]
-                offset += rows
-            }
-        }
-        let temporary = directory.appendingPathComponent("model.split.safetensors")
-        try save(arrays: converted, metadata: ["format": "mlx"], url: temporary)
-        _ = try FileManager.default.replaceItemAt(weightsURL, withItemAt: temporary)
+    /// Model directories other than `model`, such as checkpoints from older catalogs.
+    static func otherInstalledDirectories(keeping model: LocalCleanupModel) -> [URL] {
+        let entries = (try? FileManager.default.contentsOfDirectory(
+            at: self.rootDirectory,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        )) ?? []
+        return entries.filter { $0.hasDirectoryPath && $0.lastPathComponent != model.directoryName }
     }
 
     // MARK: - Helpers
@@ -157,7 +112,6 @@ nonisolated enum LocalCleanupError: LocalizedError {
     case invalidURL(String)
     case sizeMismatch(String)
     case checksumMismatch(String)
-    case unsupportedCheckpoint(String)
     case modelNotInstalled(String)
     case unknownModel(String)
     case httpStatus(Int)
@@ -167,7 +121,6 @@ nonisolated enum LocalCleanupError: LocalizedError {
         case let .invalidURL(file): "Invalid download URL for \(file)."
         case let .sizeMismatch(file): "Downloaded \(file) has the wrong size."
         case let .checksumMismatch(file): "Downloaded \(file) failed its checksum."
-        case let .unsupportedCheckpoint(reason): "Unsupported model checkpoint: \(reason)."
         case let .modelNotInstalled(id): "Local model \(id) is not downloaded."
         case let .unknownModel(id): "Unknown local model \(id)."
         case let .httpStatus(code): "Model download failed with HTTP \(code)."

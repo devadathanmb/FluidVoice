@@ -1,3 +1,4 @@
+import CryptoKit
 @testable import FluidVoice_Debug
 import XCTest
 
@@ -32,8 +33,8 @@ final class LocalCleanupPromptTests: XCTestCase {
         }
     }
 
-    func testStripRemovesEchoedTagsAndThinking() {
-        XCTAssertEqual(LocalCleanupPrompt.strip("<think>\n</think>\n<transcript>\nHello.\n</transcript>"), "Hello.")
+    func testStripRemovesThinkingBlock() {
+        XCTAssertEqual(LocalCleanupPrompt.strip("<think>\n</think>\n\nHello."), "Hello.")
     }
 
     func testVocabularyIncludesTriggersAsHints() {
@@ -46,30 +47,50 @@ final class LocalCleanupPromptTests: XCTestCase {
         XCTAssertEqual(vocabulary.map(\.term), ["Tailscale", "BullMQ"])
 
         let system = LocalCleanupPrompt.system(vocabulary: vocabulary)
-        XCTAssertTrue(system.contains("Tailscale (may be heard as: tail scale)"))
-        XCTAssertTrue(system.contains("BullMQ (may be heard as: bull mq, bool mq)"))
+        XCTAssertTrue(system.hasPrefix(LocalCleanupPrompt.systemPrompt))
+        XCTAssertTrue(system.hasSuffix(
+            "Vocabulary (use these spellings when a word sounds like one):\n"
+                + "Tailscale (heard as: tail scale), BullMQ (heard as: bull mq, bool mq)\n"
+        ))
         XCTAssertEqual(LocalCleanupPrompt.system(vocabulary: []), LocalCleanupPrompt.systemPrompt)
     }
 
-    func testMessagesEndWithWrappedTranscript() {
+    /// The model was trained on this exact prompt; any drift degrades it silently.
+    func testSystemPromptMatchesTrainingPromptExactly() {
+        let digest = SHA256.hash(data: Data(LocalCleanupPrompt.systemPrompt.utf8))
+        let hex = digest.map { String(format: "%02x", $0) }.joined()
+        XCTAssertEqual(hex, "82a71e66556e6d809411bdd7853abeb84e6856c5bf12dc5e008bb81a37b36f99")
+    }
+
+    func testMessagesSendBareTranscript() {
         let messages = LocalCleanupPrompt.messages(transcript: "hello", vocabulary: [])
-        XCTAssertEqual(messages.first?["role"] as? String, "system")
-        XCTAssertEqual(messages.last?["content"] as? String, "<transcript>\nhello\n</transcript>")
-        XCTAssertEqual(messages.count, 2 + LocalCleanupPrompt.examples.count * 2)
+        XCTAssertEqual(messages.map { $0["role"] as? String }, ["system", "user"])
+        XCTAssertEqual(messages.last?["content"] as? String, "hello")
     }
 
     func testBridgeRegistersLocalProvider() {
         XCTAssertTrue(PrivateAIProviderFeature.shared.isAvailable)
         XCTAssertEqual(PrivateAIProviderFeature.shared.providerID, "local-cleanup")
         XCTAssertEqual(PrivateAIModelRegistry.defaultModelID, LocalCleanupModelCatalog.defaultModel.id)
-        XCTAssertNotNil(PrivateAIModelRegistry.model(id: LocalCleanupModelCatalog.qwen35_4B.id))
+    }
+
+    func testOtherInstalledDirectoriesExcludeCurrentModel() throws {
+        let model = LocalCleanupModelCatalog.defaultModel
+        let root = LocalCleanupModelStore.rootDirectory
+        let stale = root.appendingPathComponent("local-test-stale-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: stale, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: stale) }
+
+        let others = LocalCleanupModelStore.otherInstalledDirectories(keeping: model).map(\.lastPathComponent)
+        XCTAssertTrue(others.contains(stale.lastPathComponent))
+        XCTAssertFalse(others.contains(model.directoryName))
     }
 }
 
-/// Downloads the default model (about 1.6 GB) and runs real cleanups.
+/// Downloads the default model (about 1.4 GB) and runs real cleanups.
 /// Local validation only: set FLUID_LOCAL_CLEANUP_E2E=1.
 final class LocalCleanupRuntimeE2ETests: XCTestCase {
-    func testDownloadSplitLoadAndCleanUp() async throws {
+    func testDownloadLoadAndCleanUp() async throws {
         try XCTSkipUnless(
             ProcessInfo.processInfo.environment["FLUID_LOCAL_CLEANUP_E2E"] == "1",
             "Set FLUID_LOCAL_CLEANUP_E2E=1 to run the local cleanup model end to end."

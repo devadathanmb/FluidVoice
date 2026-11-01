@@ -7,7 +7,7 @@ import Tokenizers
 /// In-process MLX runtime for local dictation cleanup.
 ///
 /// Holds one model at a time. The stable part of the prompt (instructions,
-/// examples, vocabulary) is prefilled once and its cache is copied per request,
+/// vocabulary) is prefilled once and its cache is copied per request,
 /// so each dictation only pays for its own tokens.
 actor LocalCleanupRuntime {
     static let shared = LocalCleanupRuntime()
@@ -22,7 +22,7 @@ actor LocalCleanupRuntime {
     }
 
     private struct PrefixCache {
-        /// The prefix depends only on the vocabulary; instructions and examples are constant.
+        /// The prefix depends only on the vocabulary; the instructions are constant.
         let vocabulary: [LocalCleanupPrompt.VocabularyTerm]
         let tokens: [Int]
         let cache: [KVCache]
