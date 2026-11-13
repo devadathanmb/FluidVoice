@@ -6,6 +6,7 @@
 
 - Describe the no-AX path as a Carbon hotkey fallback, never as an AX bypass.
 - Without AX, Carbon supports eligible modified keyboard chords only. Mouse, Fn, and modifier-only shortcuts remain unavailable.
+- Carbon cannot distinguish left/right-specific modifiers. Keep existing side-specific chords AX-required; record new keyboard chords with either-side modifiers when AX is unavailable.
 - AX is still required for cross-app text selection, focus capture/restoration, typing, and paste insertion. `TypingService` and `TextSelectionService` must stop when `AXIsProcessTrusted()` is false.
 - Clipboard copying is independent of AX and uses `NSPasteboard` through `ClipboardService`. `Copy to Clipboard` is the no-AX handoff; it does not insert text into another app.
 - Without AX, completed dictation uses clipboard-only delivery, not a failed paste attempt or an Accessibility warning. Keep sandbox/history-only output free of clipboard side effects, and do not arm Spoken Send without AX.

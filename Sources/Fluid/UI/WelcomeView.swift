@@ -1522,7 +1522,7 @@ struct OnboardingFlowView: View {
         enablesHover: Bool = true
     ) -> some View {
         let model = route.model
-        let isCompactModel = model == .fluidParakeetMini || model == .fluidParakeetPico
+        let isCompactModel = [.fluidParakeetMini, .fluidParakeetPico, .fluidParakeetPro].contains(model)
         let isSelected = self.isOnboardingRouteSelected(route)
         let isHovered = enablesHover && self.hoveredModelRouteID == route.id
         let isRouteActiveInSettings = self.isRouteSelectedInSettings(route)
@@ -2001,7 +2001,7 @@ struct OnboardingFlowView: View {
             return "Parakeet v3"
         case .parakeetTDTv2:
             return "Parakeet v2"
-        case .fluidParakeetMini, .fluidParakeetPico:
+        case .fluidParakeetMini, .fluidParakeetPico, .fluidParakeetPro:
             return model.displayName
         case .parakeetRealtime:
             return "Parakeet Flash"

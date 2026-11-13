@@ -323,7 +323,7 @@ struct SettingsView: View {
                                         Text("Accent Color")
                                             .font(self.theme.typography.bodyStrong)
                                             .foregroundStyle(self.settingsTitleText)
-                                        Text("Pick a preset accent color for the app.")
+                                        Text("Pick a preset or a custom color.")
                                             .font(self.theme.typography.bodySmall)
                                             .foregroundStyle(self.settingsSecondaryText)
                                     }
@@ -334,9 +334,38 @@ struct SettingsView: View {
                                         ForEach(SettingsStore.AccentColorOption.allCases) { option in
                                             self.accentColorDot(
                                                 for: option,
-                                                isSelected: self.settings.accentColorOption == option
+                                                isSelected: self.settings.customAccentColorHex == nil && self.settings.accentColorOption == option
                                             )
                                         }
+
+                                        let isCustom = self.settings.customAccentColorHex != nil
+                                        Button {
+                                            AccentColorPanelTarget.shared.open(with: self.settings.accentColor)
+                                        } label: {
+                                            Circle()
+                                                .fill(AngularGradient(
+                                                    colors: [.red, .yellow, .green, .cyan, .blue, .purple, .red],
+                                                    center: .center
+                                                ))
+                                                .frame(width: 16, height: 16)
+                                                .overlay(
+                                                    Circle()
+                                                        .fill(self.settings.accentColor)
+                                                        .frame(width: 7, height: 7)
+                                                        .opacity(isCustom ? 1 : 0)
+                                                )
+                                                .overlay(
+                                                    Circle()
+                                                        .stroke(
+                                                            isCustom ? self.theme.palette.accent : self.theme.palette.cardBorder.opacity(0.5),
+                                                            lineWidth: isCustom ? 2 : 1
+                                                        )
+                                                )
+                                                .padding(4)
+                                        }
+                                        .buttonStyle(.plain)
+                                        .accessibilityLabel("Custom")
+                                        .help("Custom")
                                     }
                                     .padding(.horizontal, 6)
                                     .padding(.vertical, 4)
@@ -351,67 +380,6 @@ struct SettingsView: View {
                                 }
                             }
                             .settingsSearchTarget(.accentColor)
-                            Divider().opacity(0.2)
-
-                            HStack {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text("Transcription Sounds")
-                                        .font(self.theme.typography.bodyStrong)
-                                        .foregroundStyle(self.settingsTitleText)
-                                    Text("Choose the sound cue for recording. Some cues include an end sound.")
-                                        .fixedSize(horizontal: false, vertical: true)
-                                        .font(self.theme.typography.bodySmall)
-                                        .foregroundStyle(self.settingsSecondaryText)
-                                }
-
-                                Spacer()
-
-                                FluidDropdownPicker("Transcription sound", selectedTitle: SettingsStore.shared.transcriptionStartSound.displayName, selection: Binding(
-                                    get: { SettingsStore.shared.transcriptionStartSound },
-                                    set: { newValue in
-                                        SettingsStore.shared.transcriptionStartSound = newValue
-                                        TranscriptionSoundPlayer.shared.playPreview(sound: newValue)
-                                    }
-                                )) {
-                                    ForEach(SettingsStore.TranscriptionStartSound.allCases) { option in
-                                        Text(option.displayName).tag(option)
-                                    }
-                                }
-                                .fluidDropdownStyle()
-                                .frame(width: 170, alignment: .trailing)
-                            }
-                            .settingsSearchTarget(.transcriptionSounds)
-
-                            if SettingsStore.shared.transcriptionStartSound != .none {
-                                HStack {
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text("Volume")
-                                            .font(self.theme.typography.bodyStrong)
-                                            .foregroundStyle(self.settingsTitleText)
-                                        Text("Adjust the recording sound cue volume.")
-                                            .font(self.theme.typography.bodySmall)
-                                            .foregroundStyle(self.settingsSecondaryText)
-                                    }
-
-                                    Spacer()
-
-                                    Slider(
-                                        value: Binding(
-                                            get: { Double(SettingsStore.shared.transcriptionSoundVolume) },
-                                            set: { SettingsStore.shared.transcriptionSoundVolume = Float($0) }
-                                        ),
-                                        in: 0...1,
-                                        step: 0.05
-                                    ) { editing in
-                                        if !editing {
-                                            TranscriptionSoundPlayer.shared.playPreviewAtVolume(
-                                                SettingsStore.shared.transcriptionSoundVolume
-                                            )
-                                        }
-                                    }
-                                    .frame(width: 150)
-                                }
-                            }
                         }
                     }
                     .padding(16)
@@ -689,7 +657,7 @@ struct SettingsView: View {
                                                     iconColor: .secondary,
                                                     title: "Start / Stop Meeting",
                                                     description: self.settings.fluidMeetEnabled
-                                                        ? "Toggle meeting recording using your saved source"
+                                                        ? "Choose sources, press again to record, or stop an active meeting"
                                                         : "Enable FluidMeet in FluidMeet Settings to use this shortcut"
                                                 ),
                                                 shortcut: self.settings.meetingRecordingHotkeyShortcut,
@@ -741,6 +709,67 @@ struct SettingsView: View {
                                             self.hotkeyManager?.setHotkeyMode(newValue)
                                         }
                                         .settingsSearchTarget(.activationMode)
+                                        Divider().opacity(0.2)
+
+                                        HStack {
+                                            VStack(alignment: .leading, spacing: 2) {
+                                                Text("Transcription Sounds")
+                                                    .font(self.theme.typography.bodyStrong)
+                                                    .foregroundStyle(self.settingsTitleText)
+                                                Text("Choose a recording sound. Paired sounds preview start and stop.")
+                                                    .fixedSize(horizontal: false, vertical: true)
+                                                    .font(self.theme.typography.bodySmall)
+                                                    .foregroundStyle(self.settingsSecondaryText)
+                                            }
+
+                                            Spacer()
+
+                                            FluidDropdownPicker("Transcription sound", selectedTitle: SettingsStore.shared.transcriptionStartSound.displayName, selection: Binding(
+                                                get: { SettingsStore.shared.transcriptionStartSound },
+                                                set: { newValue in
+                                                    SettingsStore.shared.transcriptionStartSound = newValue
+                                                    TranscriptionSoundPlayer.shared.playPreview(sound: newValue)
+                                                }
+                                            )) {
+                                                ForEach(SettingsStore.TranscriptionStartSound.allCases) { option in
+                                                    Text(option.displayName).tag(option)
+                                                }
+                                            }
+                                            .fluidDropdownStyle()
+                                            .frame(width: 170, alignment: .trailing)
+                                        }
+                                        .settingsSearchTarget(.transcriptionSounds)
+
+                                        if SettingsStore.shared.transcriptionStartSound != .none {
+                                            HStack {
+                                                VStack(alignment: .leading, spacing: 2) {
+                                                    Text("Volume")
+                                                        .font(self.theme.typography.bodyStrong)
+                                                        .foregroundStyle(self.settingsTitleText)
+                                                    Text("Adjust the recording sound cue volume.")
+                                                        .font(self.theme.typography.bodySmall)
+                                                        .foregroundStyle(self.settingsSecondaryText)
+                                                }
+
+                                                Spacer()
+
+                                                Slider(
+                                                    value: Binding(
+                                                        get: { Double(SettingsStore.shared.transcriptionSoundVolume) },
+                                                        set: { SettingsStore.shared.transcriptionSoundVolume = Float($0) }
+                                                    ),
+                                                    in: 0...1,
+                                                    step: 0.05
+                                                ) { editing in
+                                                    if !editing {
+                                                        TranscriptionSoundPlayer.shared.playPreviewAtVolume(
+                                                            SettingsStore.shared.transcriptionSoundVolume
+                                                        )
+                                                    }
+                                                }
+                                                .frame(width: 150)
+                                            }
+                                        }
                                         Divider().opacity(0.2)
 
                                         self.optionToggleRow(
@@ -1489,6 +1518,19 @@ struct SettingsView: View {
                 }
                 .settingsSearchTarget(.fasterLongDictation)
                 .shownInSettingsSection(.experimental, selectedSection: self.selectedSection)
+
+                if PrivateAIProviderFeature.shared.isAvailable {
+                    ThemedCard(style: .standard) {
+                        VStack(alignment: .leading, spacing: 16) {
+                            Label("Fluid Intelligence", systemImage: "sparkles")
+                                .font(.fluidSystem(.headline))
+                            DictationScreenContextSettings(settings: self.settings, isBusy: self.asr.isRunningOrStarting)
+                        }
+                        .padding(16)
+                    }
+                    .settingsSearchTarget(.dictationScreenContext)
+                    .shownInSettingsSection(.experimental, selectedSection: self.selectedSection)
+                }
             }
             .padding(.bottom, 28)
             .fluidPageContent(width: .expanding)
@@ -1649,10 +1691,12 @@ struct SettingsView: View {
         }
 
         SettingsStore.shared.audioHistoryBudgetGB = newBudget
-        let pruned = TranscriptionHistoryStore.shared.pruneAudioToBudget()
-        self.refreshAudioHistoryUsage()
-        if pruned > 0 {
-            self.presentInfoAlert(title: "Audio Pruned", message: "Deleted oldest saved audio from \(pruned) history entries.")
+        Task { @MainActor in
+            let pruned = await TranscriptionHistoryStore.shared.pruneAudioToBudget()
+            self.refreshAudioHistoryUsage()
+            if pruned > 0 {
+                self.presentInfoAlert(title: "Audio Pruned", message: "Deleted oldest saved audio from \(pruned) history entries.")
+            }
         }
     }
 
@@ -1801,6 +1845,7 @@ struct SettingsView: View {
 
     private func audioHistoryControls() -> some View {
         VStack(spacing: 12) {
+            LegacyHistoryRecoveryControls()
             HStack(alignment: .center, spacing: 12) {
                 VStack(alignment: .leading, spacing: 5) {
                     Text("Audio Storage")
@@ -2219,6 +2264,7 @@ private extension SettingsView {
                     var updated = self.settings.dictationPromptConfiguration(for: .privateAI)
                     updated.shortcut = nil
                     self.settings.setDictationPromptConfiguration(updated, for: .privateAI)
+                    NotificationCenter.default.post(name: .dictationPromptShortcutsChanged, object: nil)
                 }
             )
             .padding(.vertical, 2)
@@ -2932,6 +2978,32 @@ private struct DictionarySuggestionsSettingsRow: View {
                     .fixedSize()
                 }
                 .padding(.leading, 16)
+
+                HStack(alignment: .center, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Prompt delay")
+                            .font(self.theme.typography.bodyStrong)
+                            .foregroundStyle(self.theme.palette.primaryText)
+                        Text("Wait this long after you stop editing. Shorter delays may ask while you're still correcting.")
+                            .font(self.theme.typography.bodySmall)
+                            .foregroundStyle(self.theme.palette.secondaryText)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                    FluidDropdownPicker(
+                        "Prompt delay",
+                        selectedTitle: self.settings.automaticDictionaryPromptDelay.displayName,
+                        selection: self.$settings.automaticDictionaryPromptDelay
+                    ) {
+                        ForEach(SettingsStore.AutomaticDictionaryPromptDelay.allCases) { delay in
+                            Text(delay.displayName).tag(delay)
+                        }
+                    }
+                    .fluidDropdownStyle()
+                    .fixedSize()
+                }
+                .padding(.leading, 16)
             }
         }
     }
@@ -3133,8 +3205,12 @@ private extension SettingsView {
     }
 
     private var updateActionTitle: String {
-        if self.updater.isUpdateInProgress { return "Installing…" }
-        if self.updater.isCheckingForUpdates { return "Checking…" }
+        if self.updater.isUpdateInProgress {
+            return "Installing…"
+        }
+        if self.updater.isCheckingForUpdates {
+            return "Checking…"
+        }
         return self.updater.availableUpdateVersion == nil ? "Check for Updates" : "View Update"
     }
 
@@ -3201,7 +3277,9 @@ private extension SettingsView {
     }
 
     private var selectedRollbackTitle: String {
-        if self.selectedRollbackVersion == "local" { return "\(self.rollbackVersion) · Saved on this Mac" }
+        if self.selectedRollbackVersion == "local" {
+            return "\(self.rollbackVersion) · Saved on this Mac"
+        }
         return self.selectedRollbackVersion.isEmpty ? "Choose a version" : self.selectedRollbackVersion
     }
 
@@ -3292,6 +3370,78 @@ private extension SettingsView {
             self.selectedRollbackVersion = "local"
         } else if self.selectedRollbackVersion == "local", self.rollbackVersion.isEmpty {
             self.selectedRollbackVersion = ""
+        }
+    }
+}
+
+/// Routes the shared color panel's live changes into the custom accent setting.
+@MainActor
+private final class AccentColorPanelTarget: NSObject {
+    static let shared = AccentColorPanelTarget()
+
+    func open(with color: Color) {
+        let panel = NSColorPanel.shared
+        panel.mode = .wheel
+        panel.showsAlpha = false
+        panel.setTarget(nil) // avoid writing the seed color back as a custom choice
+        panel.color = NSColor(color)
+        panel.setTarget(self)
+        panel.setAction(#selector(self.colorChanged(_:)))
+        panel.orderFront(nil)
+    }
+
+    @objc private func colorChanged(_ panel: NSColorPanel) {
+        SettingsStore.shared.customAccentColorHex = Color(nsColor: panel.color).hexString
+    }
+}
+
+/// Observes only the recovery status, without making the entire Settings page observe history edits.
+private struct LegacyHistoryRecoveryControls: View {
+    @ObservedObject private var history = TranscriptionHistoryStore.shared
+    @Environment(\.theme) private var theme
+    @State private var isRecovering = false
+
+    var body: some View {
+        if self.history.audioPruningDeferred {
+            VStack(alignment: .leading, spacing: 8) {
+                Label("Audio cleanup is paused", systemImage: "exclamationmark.triangle")
+                    .font(self.theme.typography.bodyStrong)
+                Text("Older history needs recovery. Your recordings are being kept, even above the storage budget.")
+                    .font(self.theme.typography.bodySmall)
+                Button(self.isRecovering ? "Saving recovery copy…" : "Review recovery options…", action: self.reviewRecovery)
+                    .fluidOutlinedButton()
+                    .disabled(self.isRecovering)
+            }
+            .foregroundStyle(self.theme.palette.primaryText)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityIdentifier("history-audio-recovery")
+        }
+    }
+
+    private func reviewRecovery() {
+        let alert = NSAlert()
+        alert.messageText = "Resume audio cleanup?"
+        alert.informativeText = """
+        Restart FluidVoice first to import any readable older history. If this warning remains, save the unreadable history and all saved audio to a recovery folder and resume cleanup.
+
+        Saved transcripts stay intact. Cleanup may remove older audio from the app, but the recovery copy keeps every saved recording and stays outside your audio budget.
+        """
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "Save Recovery Copy and Resume")
+        guard alert.runModal() == .alertSecondButtonReturn else { return }
+        self.isRecovering = true
+        Task { @MainActor in
+            defer { self.isRecovering = false }
+            do {
+                let directory = try await self.history.archiveLegacyHistoryAndResumeAudioCleanup()
+                NSWorkspace.shared.open(directory)
+            } catch {
+                let failure = NSAlert()
+                failure.messageText = "Audio cleanup remains paused"
+                failure.informativeText = error.localizedDescription
+                failure.runModal()
+            }
         }
     }
 }

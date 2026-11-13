@@ -8,7 +8,11 @@ typealias MeetingTranscriptSegmentID = UUID
 
 nonisolated enum MeetingCaptureMode: String, Codable, CaseIterable, Sendable {
     case onlineCall
+    case systemAudio
+    /// Retained only to read and process older microphone-only recordings.
     case inRoom
+
+    var capturesComputerAudio: Bool { self != .inRoom }
 }
 
 nonisolated enum MeetingSessionState: String, Codable, Sendable {
@@ -146,7 +150,7 @@ nonisolated struct MeetingRecordingDefaults: Codable, Equatable, Sendable {
 
     static let unconfigured = Self(
         isConfigured: false,
-        mode: .onlineCall,
+        mode: .systemAudio,
         applicationBundleIdentifier: nil,
         microphoneCaptureDeviceID: nil,
         microphoneCoreAudioUID: nil,
@@ -178,6 +182,8 @@ nonisolated struct MeetingApplicationIdentity: Codable, Equatable, Sendable {
     /// Optional properties). `MeetingWindowSelector` prefers it when set and it still exists —
     /// prevents recording a different foreground window than the one that was actually detected.
     var windowID: UInt32?
+    /// Explicit app-wide choice; nil retains the exact-process meaning of older sessions.
+    var capturesAllInstances: Bool? = nil
 
     init(
         bundleIdentifier: String,
@@ -307,7 +313,9 @@ nonisolated struct MeetingCaptureConfiguration: Codable, Equatable, Sendable {
             throw MeetingModelValidationError.missingOnlineApplication
         case (.inRoom, .some):
             throw MeetingModelValidationError.unexpectedInRoomApplication
-        case (.onlineCall, .some), (.inRoom, .none):
+        case (.systemAudio, .some):
+            throw MeetingModelValidationError.unexpectedSystemApplication
+        case (.onlineCall, .some), (.inRoom, .none), (.systemAudio, .none):
             break
         }
     }
@@ -818,6 +826,8 @@ nonisolated struct MeetingProcessingAttempt: Codable, Identifiable, Equatable, S
     var asrProvider: String?
     var asrModel: String?
     var languageCode: String? = nil
+    /// The language of a retained completed transcript while a replacement is pending.
+    var retainedTranscriptLanguageCode: String? = nil
     var diarizationModel: String?
     var lastCompletedTrackID: MeetingAudioTrackID?
     var errorCode: String?
@@ -985,8 +995,15 @@ nonisolated struct MeetingSession: Codable, Identifiable, Equatable, Sendable {
         (self.endedAt ?? Date()).timeIntervalSince(self.startedAt)
     }
 
+    /// Current coverage wins over historical diagnostic events after a successful retry.
+    var hasIncompleteTranscriptCoverage: Bool {
+        if let complete = self.transcriptIsComplete { return !complete }
+        return self.transcriptCoverageGaps?.isEmpty == false
+            || self.events.contains { $0.kind == .transcriptCoverageIncomplete }
+    }
+
     var microphoneEchoWarning: String? {
-        guard self.mode == .onlineCall else { return nil }
+        guard self.mode.capturesComputerAudio else { return nil }
         switch self.state {
         case .preparing, .recording, .recordingDegraded, .stopping:
             guard self.events.last(where: { $0.kind == .echoFilteringUnavailable || $0.kind == .echoFilteringRestored })?.kind == .echoFilteringUnavailable else { return nil }
@@ -1157,7 +1174,9 @@ nonisolated struct MeetingSession: Codable, Identifiable, Equatable, Sendable {
             throw MeetingModelValidationError.missingOnlineApplication
         case (.inRoom, .some):
             throw MeetingModelValidationError.unexpectedInRoomApplication
-        case (.onlineCall, .some), (.inRoom, .none):
+        case (.systemAudio, .some):
+            throw MeetingModelValidationError.unexpectedSystemApplication
+        case (.onlineCall, .some), (.inRoom, .none), (.systemAudio, .none):
             break
         }
 
@@ -1172,7 +1191,7 @@ nonisolated struct MeetingSession: Codable, Identifiable, Equatable, Sendable {
         if [.recording, .recordingDegraded, .stopping, .processing, .completed, .interrupted]
             .contains(self.state)
         {
-            let expectedKinds: Set<MeetingAudioTrackKind> = self.mode == .onlineCall
+            let expectedKinds: Set<MeetingAudioTrackKind> = self.mode.capturesComputerAudio
                 ? [.applicationAudio, .microphone]
                 : [.microphone]
             guard Set(trackKinds) == expectedKinds else {
@@ -1247,12 +1266,29 @@ nonisolated struct MeetingSession: Codable, Identifiable, Equatable, Sendable {
                 throw MeetingModelValidationError.missingSegmentSpeaker
             }
         }
+        // Requests and stored text can have different languages during a retry. Only the
+        // latest successful result owns the stored transcript language; a legacy result without
+        // attempt metadata records that ownership on the replacement attempt instead.
         for attempt in self.processingAttempts {
-            if let languageCode = attempt.languageCode,
-               languageCode != self.languageCode
-            {
-                throw MeetingModelValidationError.unsupportedLanguage
+            for code in [attempt.languageCode, attempt.retainedTranscriptLanguageCode].compactMap({ $0 }) {
+                guard VoiceEngineLanguageCatalog.parakeetV3LanguageIDs.contains(code) else {
+                    throw MeetingModelValidationError.unsupportedLanguage
+                }
             }
+        }
+        let completedLanguage = self.processingAttempts.last(where: {
+            $0.stage == .completed && $0.completedAt != nil && $0.errorCode == nil && $0.languageCode != nil
+        })?.languageCode
+        let retainedLanguage = self.processingAttempts.reversed().compactMap(\.retainedTranscriptLanguageCode).first
+        if let transcriptLanguage = completedLanguage ?? retainedLanguage, transcriptLanguage != self.languageCode {
+            // An older PR build saved the requested language over retained text during a retry.
+            // Let recovery read that snapshot and restore its completed result once, without
+            // making it unreadable before the coordinator can repair it.
+            let latest = self.processingAttempts.last(where: { $0.languageCode != nil })
+            let legacyPending = [.processing, .interrupted].contains(self.state)
+                && latest?.completedAt == nil && latest?.errorCode == nil
+                && latest?.languageCode == self.languageCode && latest?.retainedTranscriptLanguageCode == nil
+            guard legacyPending else { throw MeetingModelValidationError.unsupportedLanguage }
         }
     }
 
@@ -1320,6 +1356,7 @@ nonisolated enum MeetingModelValidationError: LocalizedError, Equatable {
     case missingMicrophone
     case missingOnlineApplication
     case unexpectedInRoomApplication
+    case unexpectedSystemApplication
     case duplicateTrackID
     case duplicateTrackKind
     case invalidTrackSet
@@ -1346,6 +1383,8 @@ nonisolated enum MeetingModelValidationError: LocalizedError, Equatable {
             return "A microphone must be selected."
         case .missingOnlineApplication:
             return "An online meeting application must be selected."
+        case .unexpectedSystemApplication:
+            return "Computer-audio recordings cannot be restricted to one application."
         case .unexpectedInRoomApplication:
             return "In-room meetings cannot include an application-audio source."
         case .duplicateTrackID, .duplicateTrackKind, .invalidTrackSet:

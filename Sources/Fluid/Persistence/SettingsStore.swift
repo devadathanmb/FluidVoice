@@ -55,8 +55,10 @@ final class SettingsStore: ObservableObject {
         self.migrateDictationPromptProfilesIfNeeded()
         self.migrateLegacyDictationAIPreferenceIfNeeded()
         self.migrateSecondaryPromptShortcutIfNeeded()
+        Self.migrateModifierOnlyCancelShortcutIfNeeded(defaults: self.defaults)
         self.retireLegacySecondaryPromptShortcutIfNeeded()
         self.normalizePromptSelectionsIfNeeded()
+        self.makeEditModeIndependentIfNeeded()
         self.purgeRetiredAppleIntelligenceState()
         self.repairForcedOnboardingResetIfNeeded()
         self.migratePrimaryShortcutForCarbonFallbackIfNeeded()
@@ -1657,7 +1659,7 @@ final class SettingsStore: ObservableObject {
             self.selectedModel = nil
         }
 
-        if retiredProviderIDs.contains(self.commandModeSelectedProviderID) {
+        if self.commandModeSelectedProviderID == "apple-intelligence-disabled" {
             self.commandModeSelectedProviderID = ""
             self.commandModeSelectedModel = nil
         }
@@ -2118,7 +2120,62 @@ final class SettingsStore: ObservableObject {
             guard let data = try? JSONEncoder().encode(newValue) else {
                 return
             }
+            let oldValue = self.meetingRecordingDefaults
             self.defaults.set(data, forKey: Keys.meetingRecordingDefaults)
+            if oldValue.mode != newValue.mode || oldValue.applicationBundleIdentifier != newValue.applicationBundleIdentifier {
+                NotificationCenter.default.post(name: .meetingRecordingSourceChoiceDidChange, object: nil)
+            }
+        }
+    }
+
+    /// Publish a source choice only after both preferences agree. Observers may synchronously
+    /// refresh a bound picker, so notifying between these writes can overwrite the user's choice.
+    func saveMeetingRecordingSource(_ configuration: MeetingRecordingDefaults, recentApplication: MeetingApplicationIdentity?) {
+        var application = recentApplication
+        application?.windowID = nil
+        application?.displayID = nil
+        guard let configurationData = try? JSONEncoder().encode(configuration) else { return }
+        let applicationData: Data?
+        if let application {
+            guard let data = try? JSONEncoder().encode(application) else { return }
+            applicationData = data
+        } else {
+            applicationData = nil
+        }
+        let previous = self.meetingRecordingDefaults
+        let sourceChanged = previous.mode != configuration.mode
+            || previous.applicationBundleIdentifier != configuration.applicationBundleIdentifier
+            || self.meetingRecentApplication != application
+        self.defaults.set(configurationData, forKey: Keys.meetingRecordingDefaults)
+        if let applicationData {
+            self.defaults.set(applicationData, forKey: Keys.meetingRecentApplication)
+        } else {
+            self.defaults.removeObject(forKey: Keys.meetingRecentApplication)
+        }
+        if sourceChanged {
+            NotificationCenter.default.post(name: .meetingRecordingSourceChoiceDidChange, object: nil)
+        }
+    }
+
+    /// Picker recency is separate from the saved recording source.
+    var meetingRecentApplication: MeetingApplicationIdentity? {
+        get {
+            guard let data = self.defaults.data(forKey: Keys.meetingRecentApplication) else { return nil }
+            return try? JSONDecoder().decode(MeetingApplicationIdentity.self, from: data)
+        }
+        set {
+            guard var application = newValue else {
+                guard self.defaults.object(forKey: Keys.meetingRecentApplication) != nil else { return }
+                self.defaults.removeObject(forKey: Keys.meetingRecentApplication)
+                NotificationCenter.default.post(name: .meetingRecordingSourceChoiceDidChange, object: nil)
+                return
+            }
+            application.windowID = nil
+            application.displayID = nil
+            guard application != self.meetingRecentApplication,
+                  let data = try? JSONEncoder().encode(application) else { return }
+            self.defaults.set(data, forKey: Keys.meetingRecentApplication)
+            NotificationCenter.default.post(name: .meetingRecordingSourceChoiceDidChange, object: nil)
         }
     }
 
@@ -2683,6 +2740,7 @@ final class SettingsStore: ObservableObject {
         case fluidSfx2 = "fluid_sfx_2"
         case fluidSfx3 = "fluid_sfx_3"
         case fluidSfx4 = "fluid_sfx_4"
+        case cream, thock, petal
 
         var id: String {
             self.rawValue
@@ -2691,11 +2749,14 @@ final class SettingsStore: ObservableObject {
         var displayName: String {
             switch self {
             case .none: return "None"
-            case .fluidSfx0: return "Fluid SFX 0"
-            case .fluidSfx1: return "Fluid SFX 1"
-            case .fluidSfx2: return "Fluid SFX 2"
-            case .fluidSfx3: return "Fluid SFX 3"
-            case .fluidSfx4: return "Fluid SFX 4"
+            case .fluidSfx0: return "Original · SFX 0"
+            case .fluidSfx1: return "Ember · SFX 1"
+            case .fluidSfx2: return "Rise · SFX 2"
+            case .fluidSfx3: return "Drift · SFX 3"
+            case .fluidSfx4: return "Echo · SFX 4"
+            case .cream: return "Cream"
+            case .thock: return "Thock"
+            case .petal: return "Petal"
             }
         }
 
@@ -2707,13 +2768,23 @@ final class SettingsStore: ObservableObject {
             case .fluidSfx2: return "FV_start_2"
             case .fluidSfx3: return "sfx_3"
             case .fluidSfx4: return "sfx_4"
+            case .cream: return "cue_cream_start"
+            case .thock: return "cue_thock_start"
+            case .petal: return "cue_petal_start"
             }
         }
 
         var stopSoundFileName: String? {
             switch self {
             case .fluidSfx0: return "FV_end_0"
-            case .none, .fluidSfx1, .fluidSfx2, .fluidSfx3, .fluidSfx4: return nil
+            case .cream: return "cue_cream_stop"
+            case .thock: return "cue_thock_stop"
+            case .petal: return "cue_petal_stop"
+            case .fluidSfx1: return "FV_stop_1"
+            case .fluidSfx2: return "FV_stop_2"
+            case .fluidSfx3: return "FV_stop_3"
+            case .fluidSfx4: return "FV_stop_4"
+            case .none: return nil
             }
         }
     }
@@ -2730,11 +2801,23 @@ final class SettingsStore: ObservableObject {
         set {
             objectWillChange.send()
             self.defaults.set(newValue.rawValue, forKey: Keys.accentColorOption)
+            self.defaults.removeObject(forKey: Keys.customAccentColorHex)
+        }
+    }
+
+    /// Overrides the preset when set. Kept separate from `AccentColorOption` so backups stay readable by older builds.
+    var customAccentColorHex: String? {
+        get { self.defaults.string(forKey: Keys.customAccentColorHex) }
+        set {
+            objectWillChange.send()
+            self.defaults.set(newValue, forKey: Keys.customAccentColorHex)
         }
     }
 
     var accentColor: Color {
-        Color(hex: self.accentColorOption.hex) ?? Color(red: 0.227, green: 0.784, blue: 0.776)
+        self.customAccentColorHex.flatMap { Color(hex: $0) }
+            ?? Color(hex: self.accentColorOption.hex)
+            ?? Color(red: 0.227, green: 0.784, blue: 0.776)
     }
 
     var themePreference: ThemePreference {
@@ -3258,10 +3341,21 @@ final class SettingsStore: ObservableObject {
         }
         set {
             objectWillChange.send()
-            if let data = try? JSONEncoder().encode(newValue) {
+            // Old backups can still contain a modifier-only Cancel binding.
+            let shortcut = newValue?.isModifierOnlyShortcut == true ? HotkeyShortcut(keyCode: 53, modifierFlags: []) : newValue
+            if let data = try? JSONEncoder().encode(shortcut) {
                 self.defaults.set(data, forKey: Keys.cancelRecordingHotkeyShortcut)
             }
         }
+    }
+
+    static func migrateModifierOnlyCancelShortcutIfNeeded(defaults: UserDefaults) {
+        guard let data = defaults.data(forKey: Keys.cancelRecordingHotkeyShortcut),
+              let shortcut = try? JSONDecoder().decode(HotkeyShortcut.self, from: data),
+              shortcut.isModifierOnlyShortcut,
+              let replacement = try? JSONEncoder().encode(HotkeyShortcut(keyCode: 53, modifierFlags: []))
+        else { return }
+        defaults.set(replacement, forKey: Keys.cancelRecordingHotkeyShortcut)
     }
 
     /// Unassigned by default. Meeting recording never claims a shortcut until explicitly configured.
@@ -3472,6 +3566,20 @@ final class SettingsStore: ObservableObject {
         set {
             objectWillChange.send()
             self.defaults.set(newValue, forKey: Keys.rewriteModeShortcutEnabled)
+        }
+    }
+
+    /// Invalidates old captures even when the switch changes off and back on.
+    private(set) var editModeScreenContextRevision: UInt64 = 0
+
+    /// Lets on-device Edit Mode use the text in the front window. On until turned off.
+    var editModeReadsScreen: Bool {
+        get { self.defaults.object(forKey: Keys.editModeReadsScreen) as? Bool ?? true }
+        set {
+            guard newValue != self.editModeReadsScreen else { return }
+            objectWillChange.send()
+            self.defaults.set(newValue, forKey: Keys.editModeReadsScreen)
+            self.editModeScreenContextRevision &+= 1
         }
     }
 
@@ -3694,11 +3802,11 @@ final class SettingsStore: ObservableObject {
     }
 
     /// Whether a card is shown when a paste could not be confirmed in the target field.
-    /// Off by default: the read-back is a guess, and a wrong guess interrupts for nothing.
+    /// Enabled by default for strong unchanged-field results; explicit user choices persist.
     var showPasteCheckAlerts: Bool {
         get {
             let value = self.defaults.object(forKey: Keys.showPasteCheckAlerts)
-            return value as? Bool ?? false
+            return value as? Bool ?? true
         }
         set {
             objectWillChange.send()
@@ -3748,6 +3856,7 @@ final class SettingsStore: ObservableObject {
             hideFromDockAndAppSwitcher: self.hideFromDockAndAppSwitcher,
             showMainWindowAtLoginLaunch: self.showMainWindowAtLoginLaunch,
             accentColorOption: self.accentColorOption,
+            customAccentColorHex: self.customAccentColorHex,
             transcriptionStartSound: self.transcriptionStartSound,
             transcriptionSoundVolume: self.transcriptionSoundVolume,
             transcriptionSoundIndependentVolume: false,
@@ -3828,7 +3937,8 @@ final class SettingsStore: ObservableObject {
             fileTranscriptionExpectedSpeakerCount: self.fileTranscriptionExpectedSpeakerCount,
             meetingRecordingDefaults: self.meetingRecordingDefaults,
             privateAIIdleUnload: self.privateAIIdleUnload,
-            dictationPromptConfigurations: self.dictationPromptConfigurations
+            dictationPromptConfigurations: self.dictationPromptConfigurations,
+            automaticDictionaryPromptDelay: self.automaticDictionaryPromptDelay
         )
     }
 
@@ -3877,7 +3987,9 @@ final class SettingsStore: ObservableObject {
             MeetingBackendID(rawValue: $0)
         } ?? .productionDefault
         if let meetingRecordingDefaults = payload.meetingRecordingDefaults {
-            self.meetingRecordingDefaults = meetingRecordingDefaults
+            // The restored source supersedes this Mac's previous pick. Backups do not contain
+            // process identities, so the restored app will be resolved afresh at recording start.
+            self.saveMeetingRecordingSource(meetingRecordingDefaults, recentApplication: nil)
         }
         self.primaryDictationShortcuts = payload.primaryDictationShortcuts ?? [payload.hotkeyShortcut]
         self.promptModeHotkeyShortcut = payload.promptModeHotkeyShortcut
@@ -3909,6 +4021,7 @@ final class SettingsStore: ObservableObject {
         self.hideFromDockAndAppSwitcher = payload.hideFromDockAndAppSwitcher
         self.showMainWindowAtLoginLaunch = payload.showMainWindowAtLoginLaunch ?? true
         self.accentColorOption = payload.accentColorOption
+        self.customAccentColorHex = payload.customAccentColorHex
         self.transcriptionStartSound = payload.transcriptionStartSound
         self.transcriptionSoundVolume = payload.transcriptionSoundVolume
         self.autoUpdateCheckEnabled = payload.autoUpdateCheckEnabled
@@ -4032,6 +4145,9 @@ final class SettingsStore: ObservableObject {
         self.continuousDictationSpacingEnabled = payload.continuousDictationSpacingEnabled ?? restoredContinuousDictationModeEnabled
         self.contextAwareCapitalizationEnabled = payload.contextAwareCapitalizationEnabled ?? restoredContinuousDictationModeEnabled
         self.pauseMediaDuringTranscription = payload.pauseMediaDuringTranscription
+        if let automaticDictionaryPromptDelay = payload.automaticDictionaryPromptDelay {
+            self.automaticDictionaryPromptDelay = automaticDictionaryPromptDelay
+        }
         if let automaticDictionaryLearningEnabled = payload.automaticDictionaryLearningEnabled {
             self.automaticDictionaryLearningEnabled = automaticDictionaryLearningEnabled
         }
@@ -4072,6 +4188,7 @@ final class SettingsStore: ObservableObject {
             self.normalizeDictationPromptConfigurationsIfNeeded()
         }
         self.purgeRetiredAppleIntelligenceState()
+        self.makeEditModeIndependentIfNeeded()
     }
 
     // MARK: - Private Methods
@@ -4498,11 +4615,6 @@ final class SettingsStore: ObservableObject {
     private func syncLinkedProviderSelections(to providerID: String) {
         let trimmed = providerID.trimmingCharacters(in: .whitespacesAndNewlines)
 
-        if self.rewriteModeLinkedToGlobal {
-            self.rewriteModeSelectedProviderID = trimmed
-            self.rewriteModeSelectedModel = self.modelSelection(for: trimmed)
-        }
-
         if self.commandModeLinkedToGlobal {
             let linkedProviderID = self.isPrivateAIProviderID(trimmed) ? "" : trimmed
             self.commandModeSelectedProviderID = linkedProviderID
@@ -4566,8 +4678,43 @@ final class SettingsStore: ObservableObject {
         return ModelRepository.shared.defaultModels(for: providerID)
     }
 
+    /// Keep a legacy linked choice once, then let Edit Mode own its provider/model.
+    /// Also runs after restoring an older backup; an empty route stays visibly unconfigured.
+    func makeEditModeIndependentIfNeeded() {
+        guard self.rewriteModeLinkedToGlobal else { return }
+        let linkedProviderID = self.effectiveRewriteModeProviderID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let storedProviderID = self.rewriteModeSelectedProviderID.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Basic dictation has no cleanup provider; it must not erase an existing Edit choice.
+        let providerID = linkedProviderID.isEmpty
+            ? (storedProviderID.isEmpty ? self.selectedProviderID : storedProviderID)
+            : linkedProviderID
+        let linkedModelID = self.effectiveRewriteModeSelectedModel
+        let modelID = ModelRepository.eligibleModel(
+            preferred: linkedModelID.isEmpty ? self.rewriteModeSelectedModel : linkedModelID,
+            from: self.availableModels(for: providerID, task: .edit)
+        )
+        self.objectWillChange.send()
+        Self.makeEditModeIndependent(defaults: self.defaults, providerID: providerID, modelID: modelID)
+    }
+
+    static func makeEditModeIndependent(defaults: UserDefaults, providerID: String, modelID: String?) {
+        guard defaults.object(forKey: Keys.rewriteModeLinkedToGlobal) as? Bool != false else { return }
+        defaults.set(providerID, forKey: Keys.rewriteModeSelectedProviderID)
+        defaults.set(modelID, forKey: Keys.rewriteModeSelectedModel)
+        defaults.set(false, forKey: Keys.rewriteModeLinkedToGlobal)
+    }
+
     var effectiveRewriteModeProviderID: String {
-        self.rewriteModeLinkedToGlobal ? self.selectedProviderID : self.rewriteModeSelectedProviderID
+        guard self.rewriteModeLinkedToGlobal else { return self.rewriteModeSelectedProviderID }
+        // "Same as dictation" follows what the main shortcut really uses. On the on-device
+        // style that is the local provider, whatever selectedProviderID holds.
+        let selection = self.dictationPromptSelection(for: .primary)
+        return DictationDefaultProvider.providerID(
+            selection: selection,
+            configuration: self.dictationPromptConfiguration(for: selection),
+            selectedProviderID: self.selectedProviderID,
+            privateProviderID: PrivateAIProviderFeature.shared.providerID
+        )
     }
 
     var effectiveRewriteModeSelectedModel: String {
@@ -5052,6 +5199,17 @@ final class SettingsStore: ObservableObject {
         self.continuousDictationSpacingEnabled || self.contextAwareCapitalizationEnabled
     }
 
+    // MARK: - Dictation Screen Context
+
+    /// One opt-in for cursor and window text, with local OCR when needed.
+    var dictationScreenContextEnabled: Bool {
+        get { self.defaults.bool(forKey: Keys.dictationScreenContextEnabled) }
+        set {
+            objectWillChange.send()
+            self.defaults.set(newValue, forKey: Keys.dictationScreenContextEnabled)
+        }
+    }
+
     // MARK: - Media Playback Control
 
     /// When enabled, automatically pauses system media playback when transcription starts.
@@ -5125,6 +5283,37 @@ final class SettingsStore: ObservableObject {
         }
     }
 
+    enum AutomaticDictionaryPromptDelay: Int, Codable, CaseIterable, Identifiable {
+        case threeQuarters = 750
+        case one = 1000
+        case two = 2000
+        case three = 3000
+
+        var id: Int { self.rawValue }
+        var displayName: String {
+            switch self {
+            case .threeQuarters: "0.75 seconds"
+            case .one: "1 second"
+            case .two: "2 seconds"
+            case .three: "3 seconds"
+            }
+        }
+
+        var inactivityNanoseconds: UInt64 { UInt64(self.rawValue) * 1_000_000 }
+        // Leaving the corrected word should never wait longer than inactivity.
+        var completionNanoseconds: UInt64 { min(self.inactivityNanoseconds, 1_000_000_000) }
+    }
+
+    var automaticDictionaryPromptDelay: AutomaticDictionaryPromptDelay {
+        get {
+            AutomaticDictionaryPromptDelay(rawValue: self.defaults.integer(forKey: Keys.automaticDictionaryPromptDelay)) ?? .three
+        }
+        set {
+            objectWillChange.send()
+            self.defaults.set(newValue.rawValue, forKey: Keys.automaticDictionaryPromptDelay)
+        }
+    }
+
     var automaticDictionaryLearningEnabled: Bool {
         get { self.defaults.object(forKey: Keys.automaticDictionaryLearningEnabled) as? Bool ?? true }
         set {
@@ -5185,6 +5374,7 @@ final class SettingsStore: ObservableObject {
         case parakeetTDTv2 = "parakeet-tdt-v2"
         case fluidParakeetMini = "fluid-parakeet-mini"
         case fluidParakeetPico = "fluid-parakeet-pico"
+        case fluidParakeetPro = "fluid-parakeet-pro"
         case parakeetRealtime = "parakeet-realtime"
         case qwen3Asr = "qwen3-asr"
         case cohereTranscribeSixBit = "cohere-transcribe-6bit"
@@ -5206,6 +5396,10 @@ final class SettingsStore: ObservableObject {
         case whisperLargeTurbo = "whisper-large-turbo"
         case whisperLarge = "whisper-large"
 
+        // MARK: - Other transcribe.cpp Models
+
+        case qwen3Asr17B = "qwen3-asr-1.7b"
+
         var parakeetDescriptor: ParakeetSpeechModelCatalog.Descriptor? {
             ParakeetSpeechModelCatalog.descriptor(forModelID: self.rawValue)
         }
@@ -5224,7 +5418,7 @@ final class SettingsStore: ObservableObject {
 
         var displayName: String {
             switch self {
-            case .parakeetTDT, .parakeetTDTv2, .fluidParakeetMini, .fluidParakeetPico: return self.parakeetDescriptor?.displayName ?? self.rawValue
+            case .parakeetTDT, .parakeetTDTv2, .fluidParakeetMini, .fluidParakeetPico, .fluidParakeetPro: return self.parakeetDescriptor?.displayName ?? self.rawValue
             case .parakeetRealtime: return "Parakeet Flash (Beta)"
             case .qwen3Asr: return "Qwen3 ASR (Beta)"
             case .cohereTranscribeSixBit: return "Cohere Transcribe"
@@ -5239,14 +5433,15 @@ final class SettingsStore: ObservableObject {
             case .whisperMedium: return "Whisper Medium"
             case .whisperLargeTurbo: return "Whisper Large Turbo"
             case .whisperLarge: return "Whisper Large"
+            case .qwen3Asr17B: return "Qwen3 ASR 1.7B"
             }
         }
 
         var languageSupport: String {
             switch self {
-            case .parakeetTDT, .parakeetTDTv2, .fluidParakeetMini, .fluidParakeetPico: return self.parakeetDescriptor?.languageSupport ?? "English Only"
+            case .parakeetTDT, .parakeetTDTv2, .fluidParakeetMini, .fluidParakeetPico, .fluidParakeetPro: return self.parakeetDescriptor?.languageSupport ?? "English Only"
             case .parakeetRealtime: return "English Only (Live Streaming)"
-            case .qwen3Asr: return "30 Languages"
+            case .qwen3Asr, .qwen3Asr17B: return "30 Languages"
             case .cohereTranscribeSixBit: return "14 Languages (Select Manually)"
             case .nemotronOffline, .nemotronStreaming, .nemotronStreaming320: return "Around 40 Languages"
             case .appleSpeech: return "System Languages"
@@ -5258,7 +5453,7 @@ final class SettingsStore: ObservableObject {
 
         var downloadSize: String {
             switch self {
-            case .parakeetTDT, .parakeetTDTv2, .fluidParakeetMini, .fluidParakeetPico: return self.parakeetDescriptor?.downloadSize ?? ""
+            case .parakeetTDT, .parakeetTDTv2, .fluidParakeetMini, .fluidParakeetPico, .fluidParakeetPro: return self.parakeetDescriptor?.downloadSize ?? ""
             case .parakeetRealtime: return "~428.4 MiB"
             case .qwen3Asr: return "~2.0 GiB"
             case .cohereTranscribeSixBit: return "~1.54 GiB"
@@ -5273,12 +5468,13 @@ final class SettingsStore: ObservableObject {
             case .whisperMedium: return "~793.0 MiB"
             case .whisperLargeTurbo: return "~845.3 MiB"
             case .whisperLarge: return "~1.55 GiB"
+            case .qwen3Asr17B: return "~2.03 GiB"
             }
         }
 
         var expectedDownloadBytes: Int64 {
             switch self {
-            case .parakeetTDT, .parakeetTDTv2, .fluidParakeetMini, .fluidParakeetPico: return self.parakeetDescriptor?.expectedDownloadBytes ?? 0
+            case .parakeetTDT, .parakeetTDTv2, .fluidParakeetMini, .fluidParakeetPico, .fluidParakeetPro: return self.parakeetDescriptor?.expectedDownloadBytes ?? 0
             case .parakeetRealtime: return 449_190_189
             case .qwen3Asr: return 2000 * 1024 * 1024
             case .cohereTranscribeSixBit: return 1_650_748_785
@@ -5290,20 +5486,21 @@ final class SettingsStore: ObservableObject {
             case .whisperMedium: return 831_538_144
             case .whisperLargeTurbo: return 886_381_728
             case .whisperLarge: return 1_668_741_440
+            case .qwen3Asr17B: return 2_185_030_624
             case .appleSpeech, .appleSpeechAnalyzer: return 0
             }
         }
 
         var requiresAppleSilicon: Bool {
             switch self {
-            case .parakeetTDT, .parakeetTDTv2, .fluidParakeetMini, .fluidParakeetPico, .parakeetRealtime, .qwen3Asr, .cohereTranscribeSixBit, .nemotronOffline, .nemotronStreaming, .nemotronStreaming320: return true
+            case .parakeetTDT, .parakeetTDTv2, .fluidParakeetMini, .fluidParakeetPico, .fluidParakeetPro, .parakeetRealtime, .qwen3Asr, .qwen3Asr17B, .cohereTranscribeSixBit, .nemotronOffline, .nemotronStreaming, .nemotronStreaming320: return true
             default: return false
             }
         }
 
         var isWhisperModel: Bool {
             switch self {
-            case .parakeetTDT, .parakeetTDTv2, .fluidParakeetMini, .fluidParakeetPico, .parakeetRealtime, .qwen3Asr, .cohereTranscribeSixBit, .nemotronOffline, .nemotronStreaming, .nemotronStreaming320, .appleSpeech,
+            case .parakeetTDT, .parakeetTDTv2, .fluidParakeetMini, .fluidParakeetPico, .fluidParakeetPro, .parakeetRealtime, .qwen3Asr, .qwen3Asr17B, .cohereTranscribeSixBit, .nemotronOffline, .nemotronStreaming, .nemotronStreaming320, .appleSpeech,
                  .appleSpeechAnalyzer: return false
             default: return true
             }
@@ -5318,6 +5515,7 @@ final class SettingsStore: ObservableObject {
             case .whisperMedium: return "whisper-medium-Q8_0.gguf"
             case .whisperLargeTurbo: return "whisper-large-v3-turbo-Q8_0.gguf"
             case .whisperLarge: return "whisper-large-v3-Q8_0.gguf"
+            case .qwen3Asr17B: return "Qwen3-ASR-1.7B-Q8_0.gguf"
             default: return nil
             }
         }
@@ -5369,7 +5567,7 @@ final class SettingsStore: ObservableObject {
         /// Requires macOS 15 or later.
         var requiresMacOS15: Bool {
             switch self {
-            case .fluidParakeetMini, .fluidParakeetPico, .qwen3Asr, .cohereTranscribeSixBit: return true
+            case .fluidParakeetMini, .fluidParakeetPico, .fluidParakeetPro, .qwen3Asr, .cohereTranscribeSixBit: return true
             default: return false
             }
         }
@@ -5419,7 +5617,7 @@ final class SettingsStore: ObservableObject {
         /// Human-readable marketing name for the card UI
         var humanReadableName: String {
             switch self {
-            case .parakeetTDT, .parakeetTDTv2, .fluidParakeetMini, .fluidParakeetPico: return self.parakeetDescriptor?.humanReadableName ?? self.rawValue
+            case .parakeetTDT, .parakeetTDTv2, .fluidParakeetMini, .fluidParakeetPico, .fluidParakeetPro: return self.parakeetDescriptor?.humanReadableName ?? self.rawValue
             case .parakeetRealtime: return "Flash Dictation"
             case .qwen3Asr: return "Qwen3 - Multilingual"
             case .cohereTranscribeSixBit: return "Cohere - High Accuracy"
@@ -5434,13 +5632,14 @@ final class SettingsStore: ObservableObject {
             case .whisperMedium: return "Medium Quality"
             case .whisperLargeTurbo: return "Higher Quality but Faster"
             case .whisperLarge: return "Maximum Accuracy"
+            case .qwen3Asr17B: return "Qwen3 - Multilingual 1.7B"
             }
         }
 
         /// One-line description for the card UI
         var cardDescription: String {
             switch self {
-            case .parakeetTDT, .parakeetTDTv2, .fluidParakeetMini, .fluidParakeetPico:
+            case .parakeetTDT, .parakeetTDTv2, .fluidParakeetMini, .fluidParakeetPico, .fluidParakeetPro:
                 return self.parakeetDescriptor?.cardDescription ?? ""
             case .parakeetRealtime:
                 return "English-only streaming local dictation with low-latency partial text and end-of-utterance detection."
@@ -5470,13 +5669,15 @@ final class SettingsStore: ObservableObject {
                 return "Near-maximum accuracy with optimized speed."
             case .whisperLarge:
                 return "Best possible accuracy. Large download and memory usage."
+            case .qwen3Asr17B:
+                return "Automatically detects 30 languages. Transcribes on your Mac after you stop recording."
             }
         }
 
         /// Minimum recommended RAM in GB for this model to run safely
         var requiredMemoryGB: Double {
             switch self {
-            case .parakeetTDT, .parakeetTDTv2, .fluidParakeetMini, .fluidParakeetPico, .parakeetRealtime:
+            case .parakeetTDT, .parakeetTDTv2, .fluidParakeetMini, .fluidParakeetPico, .fluidParakeetPro, .parakeetRealtime:
                 return 4.0
             case .qwen3Asr:
                 return 8.0
@@ -5498,6 +5699,8 @@ final class SettingsStore: ObservableObject {
                 return 6.0
             case .whisperLarge:
                 return 8.0
+            case .qwen3Asr17B:
+                return 6.0
             }
         }
 
@@ -5520,7 +5723,7 @@ final class SettingsStore: ObservableObject {
         /// Speed rating (1-5, higher is faster)
         var speedRating: Int {
             switch self {
-            case .parakeetTDT, .parakeetTDTv2, .fluidParakeetMini, .fluidParakeetPico: return self.parakeetDescriptor?.performanceRatings?.speedRating ?? 0
+            case .parakeetTDT, .parakeetTDTv2, .fluidParakeetMini, .fluidParakeetPico, .fluidParakeetPro: return self.parakeetDescriptor?.performanceRatings?.speedRating ?? 0
             case .parakeetRealtime: return 5
             case .qwen3Asr: return 3
             case .cohereTranscribeSixBit: return 3
@@ -5534,13 +5737,14 @@ final class SettingsStore: ObservableObject {
             case .whisperMedium: return 2
             case .whisperLargeTurbo: return 3
             case .whisperLarge: return 1
+            case .qwen3Asr17B: return 3
             }
         }
 
         /// Accuracy rating (1-5, higher is more accurate)
         var accuracyRating: Int {
             switch self {
-            case .parakeetTDT, .parakeetTDTv2, .fluidParakeetMini, .fluidParakeetPico: return self.parakeetDescriptor?.performanceRatings?.accuracyRating ?? 0
+            case .parakeetTDT, .parakeetTDTv2, .fluidParakeetMini, .fluidParakeetPico, .fluidParakeetPro: return self.parakeetDescriptor?.performanceRatings?.accuracyRating ?? 0
             case .parakeetRealtime: return 4
             case .qwen3Asr: return 4
             case .cohereTranscribeSixBit: return 5
@@ -5554,13 +5758,14 @@ final class SettingsStore: ObservableObject {
             case .whisperMedium: return 4
             case .whisperLargeTurbo: return 5
             case .whisperLarge: return 5
+            case .qwen3Asr17B: return 5
             }
         }
 
         /// Exact speed percentage (0.0 - 1.0) for the liquid bars
         var speedPercent: Double {
             switch self {
-            case .parakeetTDT, .parakeetTDTv2, .fluidParakeetMini, .fluidParakeetPico: return self.parakeetDescriptor?.performanceRatings?.speedPercent ?? 0
+            case .parakeetTDT, .parakeetTDTv2, .fluidParakeetMini, .fluidParakeetPico, .fluidParakeetPro: return self.parakeetDescriptor?.performanceRatings?.speedPercent ?? 0
             case .parakeetRealtime: return 1.0
             case .qwen3Asr: return 0.45
             case .cohereTranscribeSixBit: return 0.85
@@ -5574,13 +5779,14 @@ final class SettingsStore: ObservableObject {
             case .whisperMedium: return 0.40
             case .whisperLargeTurbo: return 0.65
             case .whisperLarge: return 0.20
+            case .qwen3Asr17B: return 0.50
             }
         }
 
         /// Exact accuracy percentage (0.0 - 1.0) for the liquid bars
         var accuracyPercent: Double {
             switch self {
-            case .parakeetTDT, .parakeetTDTv2, .fluidParakeetMini, .fluidParakeetPico: return self.parakeetDescriptor?.performanceRatings?.accuracyPercent ?? 0
+            case .parakeetTDT, .parakeetTDTv2, .fluidParakeetMini, .fluidParakeetPico, .fluidParakeetPro: return self.parakeetDescriptor?.performanceRatings?.accuracyPercent ?? 0
             case .parakeetRealtime: return 0.75
             case .qwen3Asr: return 0.90
             case .cohereTranscribeSixBit: return 0.98
@@ -5594,6 +5800,7 @@ final class SettingsStore: ObservableObject {
             case .whisperMedium: return 0.80
             case .whisperLargeTurbo: return 0.95
             case .whisperLarge: return 1.00
+            case .qwen3Asr17B: return 1.00
             }
         }
 
@@ -5602,9 +5809,10 @@ final class SettingsStore: ObservableObject {
             switch self {
             case .parakeetTDT: return "FluidVoice Pick"
             case .parakeetTDTv2: return "FluidVoice Pick"
-            case .fluidParakeetMini, .fluidParakeetPico: return "New"
+            case .fluidParakeetMini, .fluidParakeetPico, .fluidParakeetPro: return "New"
             case .parakeetRealtime: return "Beta"
             case .qwen3Asr: return "Beta"
+            case .qwen3Asr17B: return nil
             case .cohereTranscribeSixBit: return "New"
             case .nemotronOffline, .nemotronStreaming, .nemotronStreaming320: return "New + Beta"
             case .appleSpeechAnalyzer: return "New"
@@ -5615,7 +5823,7 @@ final class SettingsStore: ObservableObject {
         /// Optimization level for Apple Silicon (for display)
         var appleSiliconOptimized: Bool {
             switch self {
-            case .parakeetTDT, .parakeetTDTv2, .fluidParakeetMini, .fluidParakeetPico, .parakeetRealtime, .qwen3Asr, .cohereTranscribeSixBit, .nemotronOffline, .nemotronStreaming, .nemotronStreaming320, .appleSpeechAnalyzer:
+            case .parakeetTDT, .parakeetTDTv2, .fluidParakeetMini, .fluidParakeetPico, .fluidParakeetPro, .parakeetRealtime, .qwen3Asr, .cohereTranscribeSixBit, .nemotronOffline, .nemotronStreaming, .nemotronStreaming320, .appleSpeechAnalyzer:
                 return true
             default:
                 return false
@@ -5626,7 +5834,7 @@ final class SettingsStore: ObservableObject {
         /// Large Whisper models are too slow for streaming, so they only do final transcription on stop.
         var supportsStreaming: Bool {
             switch self {
-            case .qwen3Asr, .whisperMedium, .whisperLargeTurbo, .whisperLarge:
+            case .qwen3Asr, .qwen3Asr17B, .whisperMedium, .whisperLargeTurbo, .whisperLarge:
                 return false // Too slow for real-time chunk processing
             default:
                 return true // All other models support streaming
@@ -5636,7 +5844,7 @@ final class SettingsStore: ObservableObject {
         var supportsPronunciationMatching: Bool {
             #if arch(arm64)
             switch self {
-            case .parakeetTDT, .parakeetTDTv2, .fluidParakeetMini, .fluidParakeetPico:
+            case .parakeetTDT, .parakeetTDTv2, .fluidParakeetMini, .fluidParakeetPico, .fluidParakeetPro:
                 return true
             default:
                 return false
@@ -5688,11 +5896,11 @@ final class SettingsStore: ObservableObject {
         /// Which provider this model belongs to
         var provider: Provider {
             switch self {
-            case .parakeetTDT, .parakeetTDTv2, .fluidParakeetMini, .fluidParakeetPico, .parakeetRealtime, .nemotronOffline, .nemotronStreaming, .nemotronStreaming320:
+            case .parakeetTDT, .parakeetTDTv2, .fluidParakeetMini, .fluidParakeetPico, .fluidParakeetPro, .parakeetRealtime, .nemotronOffline, .nemotronStreaming, .nemotronStreaming320:
                 return .nvidia
             case .appleSpeech, .appleSpeechAnalyzer:
                 return .apple
-            case .qwen3Asr:
+            case .qwen3Asr, .qwen3Asr17B:
                 return .qwen
             case .cohereTranscribeSixBit:
                 return .cohere
@@ -5711,7 +5919,7 @@ final class SettingsStore: ObservableObject {
             switch self {
             case .appleSpeech, .appleSpeechAnalyzer:
                 return true
-            case .parakeetTDT, .parakeetTDTv2, .fluidParakeetMini, .fluidParakeetPico:
+            case .parakeetTDT, .parakeetTDTv2, .fluidParakeetMini, .fluidParakeetPico, .fluidParakeetPro:
                 #if canImport(FluidAudio)
                 guard let descriptor = self.parakeetDescriptor else { return false }
                 return Self.parakeetModelsExist(descriptor: descriptor)
@@ -5800,11 +6008,11 @@ final class SettingsStore: ObservableObject {
         /// Brand/provider name for the model (NVIDIA, Apple, OpenAI)
         var brandName: String {
             switch self {
-            case .fluidParakeetMini, .fluidParakeetPico:
+            case .fluidParakeetMini, .fluidParakeetPico, .fluidParakeetPro:
                 return "FluidVoice"
             case .parakeetTDT, .parakeetTDTv2, .parakeetRealtime, .nemotronOffline, .nemotronStreaming, .nemotronStreaming320:
                 return "NVIDIA"
-            case .qwen3Asr:
+            case .qwen3Asr, .qwen3Asr17B:
                 return "Qwen"
             case .cohereTranscribeSixBit:
                 return "Cohere"
@@ -5826,11 +6034,11 @@ final class SettingsStore: ObservableObject {
         /// Brand color for the provider badge
         var brandColorHex: String {
             switch self {
-            case .fluidParakeetMini, .fluidParakeetPico:
+            case .fluidParakeetMini, .fluidParakeetPico, .fluidParakeetPro:
                 return "#1A75FF" // FluidBrandColors.blue
             case .parakeetTDT, .parakeetTDTv2, .parakeetRealtime, .nemotronOffline, .nemotronStreaming, .nemotronStreaming320:
                 return "#76B900"
-            case .qwen3Asr:
+            case .qwen3Asr, .qwen3Asr17B:
                 return "#E67E22"
             case .cohereTranscribeSixBit:
                 return "#FA6B3C"
@@ -5942,6 +6150,7 @@ private extension SettingsStore {
         static let suppressedMicrophoneUIDs = "SuppressedMicrophoneUIDs"
         static let preferredOutputDeviceUID = "PreferredOutputDeviceUID"
         static let meetingRecordingDefaults = "MeetingRecordingDefaults"
+        static let meetingRecentApplication = "MeetingRecentApplication"
         static let meetingAudioRetentionPolicy = "MeetingAudioRetentionPolicy"
         static let meetingTranscriptionBackendID = "MeetingTranscriptionBackendID"
         static let fluidMeetEnabled = "FluidMeetEnabled"
@@ -5956,6 +6165,7 @@ private extension SettingsStore {
         static let launchAtStartup = "LaunchAtStartup"
         static let showInDock = "ShowInDock"
         static let accentColorOption = "AccentColorOption"
+        static let customAccentColorHex = "CustomAccentColorHex"
         static let themePreference = "ThemePreference"
         static let enableTranscriptionSounds = "EnableTranscriptionSounds"
         static let transcriptionStartSound = "TranscriptionStartSound"
@@ -6023,6 +6233,7 @@ private extension SettingsStore {
         // Model Reasoning Config Keys
         static let modelReasoningConfigs = "ModelReasoningConfigs"
         static let rewriteModeShortcutEnabled = "RewriteModeShortcutEnabled"
+        static let editModeReadsScreen = "EditModeReadsScreen"
         static let showThinkingTokens = "ShowThinkingTokens"
 
         // Stats Keys
@@ -6050,11 +6261,13 @@ private extension SettingsStore {
         static let continuousDictationModeEnabled = "ContinuousDictationModeEnabled"
         static let continuousDictationSpacingEnabled = "ContinuousDictationSpacingEnabled"
         static let contextAwareCapitalizationEnabled = "ContextAwareCapitalizationEnabled"
+        static let dictationScreenContextEnabled = "DictationScreenContextEnabled"
 
         // Custom Dictionary
         static let customDictionaryEntries = "CustomDictionaryEntries"
         static let automaticDictionaryLearningEnabled = "AutomaticDictionaryLearningEnabled"
         static let automaticDictionarySuggestionFrequency = "AutomaticDictionarySuggestionFrequency"
+        static let automaticDictionaryPromptDelay = "AutomaticDictionaryPromptDelay"
         static let vocabularyBoostingEnabled = "VocabularyBoostingEnabled"
         static let pronunciationMatchingEnabled = "PronunciationMatchingEnabled"
 
@@ -6287,12 +6500,15 @@ extension SettingsStore {
 extension SettingsStore.SpeechModel {
     var supportedLanguageCodes: String? {
         switch self {
-        case .parakeetTDT:
+        case .parakeetTDT, .fluidParakeetMini, .fluidParakeetPico, .fluidParakeetPro:
             return "BG, HR, CS, DA, NL, EN, ET, FI, FR, DE, EL, HU, IT, LV, LT, MT, PL, PT, RO, SK, SL, ES, SV, RU, UK"
-        case .fluidParakeetMini, .fluidParakeetPico, .parakeetRealtime:
+        case .parakeetRealtime:
             return "EN"
         case .cohereTranscribeSixBit:
             return "AR, DE, EL, EN, ES, FR, IT, JA, KO, NL, PL, PT, VI, ZH"
+        case .qwen3Asr, .qwen3Asr17B:
+            // https://huggingface.co/Qwen/Qwen3-ASR-1.7B#released-models-description-and-download
+            return "ZH, EN, YUE, AR, DE, FR, ES, PT, ID, IT, KO, RU, TH, VI, JA, TR, HI, MS, NL, SV, DA, FI, PL, CS, FIL, FA, EL, HU, MK, RO"
         case .nemotronOffline, .nemotronStreaming, .nemotronStreaming320:
             return "40 language-locales"
         case .appleSpeechAnalyzer:
@@ -6304,14 +6520,16 @@ extension SettingsStore.SpeechModel {
 
     var supportedLanguageNames: String? {
         switch self {
-        case .parakeetTDT:
+        case .parakeetTDT, .fluidParakeetMini, .fluidParakeetPico, .fluidParakeetPro:
             return """
             Bulgarian, Croatian, Czech, Danish, Dutch, English, Estonian, Finnish, French, German, Greek, Hungarian, Italian, Latvian, Lithuanian, Maltese, Polish, Portuguese, Romanian, Slovak, Slovenian, Spanish, Swedish, Russian, and Ukrainian
             """
-        case .fluidParakeetMini, .fluidParakeetPico:
-            return "English"
         case .cohereTranscribeSixBit:
             return "Arabic, German, Greek, English, Spanish, French, Italian, Japanese, Korean, Dutch, Polish, Portuguese, Vietnamese, and Mandarin Chinese"
+        case .qwen3Asr, .qwen3Asr17B:
+            return "Chinese, English, Cantonese, Arabic, German, French, Spanish, Portuguese, Indonesian, Italian, Korean, Russian, Thai, " +
+                "Vietnamese, Japanese, Turkish, Hindi, Malay, Dutch, Swedish, Danish, Finnish, Polish, Czech, Filipino, Persian, Greek, " +
+                "Hungarian, Macedonian, and Romanian"
         case .nemotronOffline, .nemotronStreaming, .nemotronStreaming320:
             return "Spanish, Italian, Portuguese, Hindi, Korean, English, German, French, Russian, Turkish, Vietnamese, Dutch, Japanese, Arabic, " +
                 "Ukrainian; Polish, Norwegian Bokmal, Finnish, Mandarin, Czech, Bulgarian, Slovak, Swedish, Croatian, Romanian, Estonian, " +

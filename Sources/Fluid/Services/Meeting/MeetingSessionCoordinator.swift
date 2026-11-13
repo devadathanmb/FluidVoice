@@ -134,7 +134,11 @@ final class MeetingSessionCoordinator: ObservableObject {
     /// Reservation held from the public start entry point through every async start step.
     /// This closes the preflight/lease window where two starts could otherwise pass guards.
     private var startReservation: UUID? {
-        willSet { if (newValue != nil) != (self.startReservation != nil) { self.objectWillChange.send() } }
+        willSet {
+            if (newValue != nil) != (self.startReservation != nil) {
+                self.objectWillChange.send()
+            }
+        }
     }
 
     private var liveTranscriptionCoordinator: MeetingLiveTranscriptionCoordinator?
@@ -143,26 +147,46 @@ final class MeetingSessionCoordinator: ObservableObject {
     private var captureGeneration: UUID?
     private var operationGeneration: UUID?
     private var stopTask: Task<MeetingSession, Error>? {
-        willSet { if (newValue == nil) != (self.stopTask == nil) { self.objectWillChange.send() } }
+        willSet {
+            if (newValue == nil) != (self.stopTask == nil) {
+                self.objectWillChange.send()
+            }
+        }
     }
 
     private var interruptionTask: Task<Void, Never>? {
-        willSet { if (newValue == nil) != (self.interruptionTask == nil) { self.objectWillChange.send() } }
+        willSet {
+            if (newValue == nil) != (self.interruptionTask == nil) {
+                self.objectWillChange.send()
+            }
+        }
     }
 
     private var terminationTask: Task<Void, Never>?
     private var retryTask: Task<MeetingSession, Error>? {
-        willSet { if (newValue == nil) != (self.retryTask == nil) { self.objectWillChange.send() } }
+        willSet {
+            if (newValue == nil) != (self.retryTask == nil) {
+                self.objectWillChange.send()
+            }
+        }
     }
 
     private let persistence: MeetingSessionPersistenceQueue
     private var restoreTask: Task<Void, Never>?
     private var isDeleting = false {
-        willSet { if newValue != self.isDeleting { self.objectWillChange.send() } }
+        willSet {
+            if newValue != self.isDeleting {
+                self.objectWillChange.send()
+            }
+        }
     }
 
     private var isMutatingSession = false {
-        willSet { if newValue != self.isMutatingSession { self.objectWillChange.send() } }
+        willSet {
+            if newValue != self.isMutatingSession {
+                self.objectWillChange.send()
+            }
+        }
     }
 
     private var sweepPending = false
@@ -254,7 +278,9 @@ final class MeetingSessionCoordinator: ObservableObject {
     }
 
     var isProcessing: Bool {
-        if case .processing = self.state { return true }
+        if case .processing = self.state {
+            return true
+        }
         return false
     }
 
@@ -286,7 +312,7 @@ final class MeetingSessionCoordinator: ObservableObject {
 
     var sourceDisplayName: String {
         self.currentSession?.capturedApplication?.displayName
-            ?? (self.currentSession?.mode == .inRoom ? "In-room meeting" : "Meeting audio")
+            ?? (self.currentSession?.mode == .inRoom ? "In-room meeting" : "Computer audio")
     }
 
     var microphoneDisplayName: String {
@@ -309,6 +335,7 @@ final class MeetingSessionCoordinator: ObservableObject {
         title: String,
         preferredBundleIdentifier: String?,
         preferredWindowID: UInt32?,
+        preferredProcessID: Int32? = nil,
         requirePreferredApplication: Bool = false
     ) async throws -> MeetingCaptureConfiguration {
         let microphone = try await MeetingCaptureSourceCatalog.defaultMicrophone(
@@ -320,6 +347,7 @@ final class MeetingSessionCoordinator: ObservableObject {
             var resolved = try MeetingCaptureSourceCatalog.resolveApplication(
                 from: applications,
                 preferredBundleIdentifier: preferredBundleIdentifier,
+                preferredProcessID: preferredProcessID,
                 requirePreferredApplication: requirePreferredApplication
             )
             if let preferredWindowID, resolved.bundleIdentifier == preferredBundleIdentifier {
@@ -350,13 +378,17 @@ final class MeetingSessionCoordinator: ObservableObject {
         resolvingSourceID: MeetingSessionID?
     ) async throws -> MeetingSession {
         guard SettingsStore.shared.fluidMeetEnabled else { throw MeetingCoordinatorError.featureDisabled }
-        guard self.startReservation == nil else { throw MeetingCoordinatorError.recordingAlreadyActive }
-        guard !self.hasBlockingActivityTask,
+        guard self.startReservation == nil,
+              !self.hasBlockingActivityTask,
               self.canBeginNewRecording, !self.isDeleting
         else { throw MeetingCoordinatorError.recordingAlreadyActive }
         let reservation = UUID()
         self.startReservation = reservation
-        defer { if self.startReservation == reservation { self.startReservation = nil } }
+        defer {
+            if self.startReservation == reservation {
+                self.startReservation = nil
+            }
+        }
         await self.ensureRestored()
         let passiveOffer = passiveOffer ?? self.activeSession.flatMap { offer in
             (offer.state == .interrupted || offer.state == .failed) ? offer : nil
@@ -454,7 +486,9 @@ final class MeetingSessionCoordinator: ObservableObject {
                           self.liveTranscriptionCoordinator != nil,
                           self.liveTranscript.accepts(snapshot, generation: generation, activeGeneration: self.captureGeneration)
                     else { return }
-                    if snapshot.hasNewWords(since: self.liveTranscript) { self.lastLiveSpeechAt = Date() }
+                    if snapshot.hasNewWords(since: self.liveTranscript) {
+                        self.lastLiveSpeechAt = Date()
+                    }
                     self.liveTranscript = snapshot
                 }
             }
@@ -626,12 +660,12 @@ final class MeetingSessionCoordinator: ObservableObject {
 
     @discardableResult
     func stopAndTranscribe() async throws -> MeetingSession {
-        if let stopTask = self.stopTask { return try await stopTask.value }
-        guard let session = self.activeSession else { throw MeetingCoordinatorError.noActiveMeeting }
-        guard self.interruptionTask == nil, self.terminationTask == nil else {
-            throw MeetingCoordinatorError.activityInProgress
+        if let stopTask = self.stopTask {
+            return try await stopTask.value
         }
-        guard [.preparing, .recording, .recordingDegraded, .stopping].contains(session.state),
+        guard let session = self.activeSession else { throw MeetingCoordinatorError.noActiveMeeting }
+        guard self.interruptionTask == nil, self.terminationTask == nil,
+              [.preparing, .recording, .recordingDegraded, .stopping].contains(session.state),
               let generation = self.operationGeneration
         else { throw MeetingCoordinatorError.activityInProgress }
 
@@ -657,11 +691,11 @@ final class MeetingSessionCoordinator: ObservableObject {
     }
 
     @discardableResult
-    func retryProcessing(sessionID: MeetingSessionID) async throws -> MeetingSession {
+    func retryProcessing(sessionID: MeetingSessionID, languageCode: String? = nil) async throws -> MeetingSession {
         guard self.retryTask == nil else { throw MeetingCoordinatorError.activityInProgress }
         let task = Task { @MainActor [weak self] () throws -> MeetingSession in
             guard let self else { throw MeetingCoordinatorError.noActiveMeeting }
-            return try await self.performRetryProcessing(sessionID: sessionID)
+            return try await self.performRetryProcessing(sessionID: sessionID, languageCode: languageCode)
         }
         self.retryTask = task
         do {
@@ -674,7 +708,16 @@ final class MeetingSessionCoordinator: ObservableObject {
         }
     }
 
-    private func performRetryProcessing(sessionID: MeetingSessionID) async throws -> MeetingSession {
+    private func performRetryProcessing(sessionID: MeetingSessionID, languageCode: String?) async throws -> MeetingSession {
+        let requestedLanguage: String?
+        if let languageCode {
+            guard let code = MeetingRetranscriptionLanguage.canonicalCode(languageCode) else {
+                throw MeetingCoordinatorError.unsupportedRetranscriptionLanguage
+            }
+            requestedLanguage = code
+        } else {
+            requestedLanguage = nil
+        }
         await self.ensureRestored()
         guard self.stopTask == nil,
               self.interruptionTask == nil,
@@ -690,7 +733,17 @@ final class MeetingSessionCoordinator: ObservableObject {
             guard let session = self.activeSession, session.hasRetryableAudio else {
                 throw MeetingCoordinatorError.noRecoverableAudio
             }
-            return try await self.beginProcessingRetry(session)
+            let retainedLanguage = Self.retainedCompletedLanguage(for: session) ?? session.languageCode
+            let hadVisibleTranscript = Self.retainedCompletedLanguage(for: session) != nil
+            var prepared = session
+            prepared.languageCode = retainedLanguage
+            self.activeSession = prepared
+            return try await self.beginProcessingRetry(
+                prepared,
+                retainedLanguage: retainedLanguage,
+                hadVisibleTranscript: hadVisibleTranscript,
+                requestedLanguageCode: requestedLanguage ?? session.languageCode
+            )
         }
 
         if let offer = self.activeSession {
@@ -734,12 +787,62 @@ final class MeetingSessionCoordinator: ObservableObject {
             self.state = .idle
         }
 
-        self.activeSession = session
-        self.trackHealth = Dictionary(uniqueKeysWithValues: session.audioTracks.map { ($0.kind, $0.health) })
-        return try await self.beginProcessingRetry(session)
+        let retainedLanguage = Self.retainedCompletedLanguage(for: session) ?? session.languageCode
+        let hadVisibleTranscript = Self.retainedCompletedLanguage(for: session) != nil
+        var prepared = session
+        prepared.languageCode = retainedLanguage
+        self.activeSession = prepared
+        self.trackHealth = Dictionary(uniqueKeysWithValues: prepared.audioTracks.map { ($0.kind, $0.health) })
+        return try await self.beginProcessingRetry(
+            prepared,
+            retainedLanguage: retainedLanguage,
+            hadVisibleTranscript: hadVisibleTranscript,
+            requestedLanguageCode: requestedLanguage ?? session.languageCode
+        )
     }
 
-    private func beginProcessingRetry(_ inputSession: MeetingSession) async throws -> MeetingSession {
+    /// Puts back the transcript that was already stored. A failed language change must not leave
+    /// that transcript labeled with the language that did not finish, or hide it behind the failure screen.
+    private func restoreStoredTranscript(_ session: inout MeetingSession, from inputSession: MeetingSession) {
+        session.speakers = inputSession.speakers
+        session.transcriptSegments = inputSession.transcriptSegments
+        session.postProcessing = inputSession.postProcessing
+        session.transcriptCoverageGaps = inputSession.transcriptCoverageGaps
+        session.events.removeAll { $0.kind == .transcriptCoverageIncomplete }
+        session.events.append(contentsOf: inputSession.events.filter { $0.kind == .transcriptCoverageIncomplete })
+        session.resultSidecarReference = inputSession.resultSidecarReference
+        session.transcriptIsComplete = inputSession.transcriptIsComplete
+        session.transcriptTimeDomain = inputSession.transcriptTimeDomain
+    }
+
+    /// Puts the pre-retry language back. Legacy meetings may have no attempt language at all, so the
+    /// session language from before this run is the one that still labels the stored transcript.
+    private func restoreRetainedLanguage(_ session: inout MeetingSession, retainedLanguage: String) {
+        guard retainedLanguage != session.languageCode else { return }
+        session.languageCode = retainedLanguage
+    }
+
+    private func publishRetryOutcome(_ session: MeetingSession, failure: MeetingSessionFailure?) {
+        self.operationGeneration = nil
+        if session.state == .completed {
+            self.activeSession = nil
+            self.latestCompletedSession = session
+            self.state = .completed(session.id)
+        } else if session.state == .interrupted {
+            self.activeSession = session
+            self.state = .interrupted(session.id)
+        } else if let failure {
+            self.activeSession = session
+            self.state = .failed(session.id, failure)
+        }
+    }
+
+    private func beginProcessingRetry(
+        _ inputSession: MeetingSession,
+        retainedLanguage: String,
+        hadVisibleTranscript: Bool,
+        requestedLanguageCode: String
+    ) async throws -> MeetingSession {
         var session = inputSession
         if self.activityLease == nil {
             self.activityLease = try await self.audioArbiter.acquireMeetingCapture()
@@ -752,15 +855,27 @@ final class MeetingSessionCoordinator: ObservableObject {
         let closedAt = Date()
         for index in session.processingAttempts.indices where session.processingAttempts[index].completedAt == nil {
             session.processingAttempts[index].completedAt = closedAt
+            session.processingAttempts[index].errorCode = session.processingAttempts[index].errorCode ?? "interrupted"
         }
-        session.processingAttempts.append(Self.pendingProcessingAttempt())
+        // Record the language on the new attempt before the first save. A language change
+        // otherwise leaves only the previous attempt's language, and persistence rejects the session.
+        var attempt = Self.pendingProcessingAttempt()
+        attempt.languageCode = requestedLanguageCode
+        attempt.retainedTranscriptLanguageCode = hadVisibleTranscript ? retainedLanguage : nil
+        session.processingAttempts.append(attempt)
         session.updatedAt = Date()
         self.activeSession = session
         try? await self.store.save(session)
         // Processing regenerates the transcript; only clear the undo stack once retry actually
         // proceeds so a lease/save failure above leaves the prior correction undoable.
         self.correctionUndoStacks[session.id] = nil
-        return try await self.process(session, generation: generation)
+        return try await self.process(
+            session,
+            generation: generation,
+            retainedLanguage: retainedLanguage,
+            hadVisibleTranscript: hadVisibleTranscript,
+            requestedLanguageCode: requestedLanguageCode
+        )
     }
 
     func deleteSession(id: MeetingSessionID) async throws {
@@ -876,15 +991,25 @@ final class MeetingSessionCoordinator: ObservableObject {
     }
 
     private func resolveSession(_ id: MeetingSessionID) async throws -> MeetingSession {
-        if let active = self.activeSession, active.id == id { return active }
-        if let completed = self.latestCompletedSession, completed.id == id { return completed }
-        if let loaded = try await self.store.loadTranscript(id: id) { return loaded }
+        if let active = self.activeSession, active.id == id {
+            return active
+        }
+        if let completed = self.latestCompletedSession, completed.id == id {
+            return completed
+        }
+        if let loaded = try await self.store.loadTranscript(id: id) {
+            return loaded
+        }
         throw MeetingCoordinatorError.noActiveMeeting
     }
 
     private func refreshSlots(with session: MeetingSession) {
-        if self.activeSession?.id == session.id { self.activeSession = session }
-        if self.latestCompletedSession?.id == session.id { self.latestCompletedSession = session }
+        if self.activeSession?.id == session.id {
+            self.activeSession = session
+        }
+        if self.latestCompletedSession?.id == session.id {
+            self.latestCompletedSession = session
+        }
     }
 
     @discardableResult
@@ -947,7 +1072,9 @@ final class MeetingSessionCoordinator: ObservableObject {
                 return (id: segment.id, speakerID: segment.speakerID, revision: segment.revision)
             }
             for source in merges.keys.sorted(by: { $0.uuidString < $1.uuidString }) {
-                if let target = merges[source] { try session.mergeSpeakers(source, into: target) }
+                if let target = merges[source] {
+                    try session.mergeSpeakers(source, into: target)
+                }
             }
             for (speakerID, name) in edits.names {
                 guard session.speakers.contains(where: { $0.id == speakerID && $0.mergedIntoSpeakerID == nil }) else { continue }
@@ -1060,6 +1187,9 @@ final class MeetingSessionCoordinator: ObservableObject {
     /// Not a transcript correction: does not push onto `correctionUndoStacks`.
     @discardableResult
     func renameSession(sessionID: MeetingSessionID, to title: String) async throws -> MeetingSession {
+        if self.activeSession?.id == sessionID, self.isRecording {
+            return try await self.renameRecordingSession(sessionID: sessionID, to: title)
+        }
         guard !self.isMutatingSession else { throw MeetingCoordinatorError.activityInProgress }
         self.isMutatingSession = true
         defer { self.releaseMutationGate() }
@@ -1074,6 +1204,13 @@ final class MeetingSessionCoordinator: ObservableObject {
         let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { throw MeetingDomainError.emptyMeetingTitle }
         guard target.title != trimmed else { return target }
+
+        if let directory = try await self.store.existingSessionDirectory(for: sessionID) {
+            let snapshot = target
+            try await Task.detached(priority: .utility) {
+                try MeetingSummaryController.SavedSummary.migrateLegacySummaries(in: directory, for: snapshot)
+            }.value
+        }
 
         target.title = trimmed
         target.defaultTitleBase = nil
@@ -1167,12 +1304,12 @@ final class MeetingSessionCoordinator: ObservableObject {
         for session in sessions {
             await self.healLeftoverAudio(for: session)
 
-            guard session.retention.audioDeletedAt == nil else { continue }
-            guard Self.isSweepEligible(session) else { continue }
-            guard let deadline = policy.deadline(endedAt: session.endedAt, startedAt: session.startedAt) else { continue }
+            guard session.retention.audioDeletedAt == nil, Self.isSweepEligible(session), let deadline = policy.deadline(endedAt: session.endedAt, startedAt: session.startedAt) else { continue }
 
             guard deadline <= now else {
-                if nextDeadline.map({ deadline < $0 }) ?? true { nextDeadline = deadline }
+                if nextDeadline.map({ deadline < $0 }) ?? true {
+                    nextDeadline = deadline
+                }
                 continue
             }
             guard self.isSafeToSweep(sessionID: session.id) else {
@@ -1363,7 +1500,17 @@ final class MeetingSessionCoordinator: ObservableObject {
 
         var viable: [MeetingSession] = []
         for session in recoverable {
-            let expectedKinds: Set<MeetingAudioTrackKind> = session.mode == .onlineCall
+            if let restored = Self.restoringCompletedResult(session) {
+                do { try await self.store.save(restored) } catch {
+                    self.restoreTask = nil
+                    DebugLogger.shared.log("Failed to persist retained meeting result for \(session.id): \(error)")
+                }
+                if self.latestCompletedSession.map({ $0.startedAt < restored.startedAt }) ?? true {
+                    self.latestCompletedSession = restored
+                }
+                continue
+            }
+            let expectedKinds: Set<MeetingAudioTrackKind> = session.mode.capturesComputerAudio
                 ? [.applicationAudio, .microphone]
                 : [.microphone]
             let hasExpectedTracks = Set(session.audioTracks.map(\.kind)) == expectedKinds
@@ -1401,7 +1548,12 @@ final class MeetingSessionCoordinator: ObservableObject {
                 DebugLogger.shared.log("Failed to persist non-viable recovery classification for \(session.id): \(error)")
             }
         }
-        guard !viable.isEmpty else { return }
+        guard !viable.isEmpty else {
+            if let completed = self.latestCompletedSession {
+                self.state = .completed(completed.id)
+            }
+            return
+        }
 
         guard let active = viable.sorted(by: { lhs, rhs in
             lhs.startedAt != rhs.startedAt
@@ -1494,7 +1646,11 @@ final class MeetingSessionCoordinator: ObservableObject {
         }
         await self.tearDownLiveTranscription()
 
-        session.state = .interrupted
+        let retainedResult = Self.restoringCompletedResult(session)
+        session = retainedResult ?? session
+        if retainedResult == nil {
+            session.state = .interrupted
+        }
         if !session.events.contains(where: { $0.kind == .appTermination }) {
             session.events.append(MeetingSessionEvent(
                 id: UUID(),
@@ -1503,10 +1659,12 @@ final class MeetingSessionCoordinator: ObservableObject {
                 trackID: nil,
                 detail: wasCapturing
                     ? "Capture stopped at app termination; transcription is pending."
+                    : retainedResult != nil
+                    ? "Retranscription paused at app termination; the previous transcript was kept."
                     : "Transcription paused at app termination and will resume next launch."
             ))
         }
-        if Self.shouldQueuePendingAttempt(for: session) {
+        if retainedResult == nil, Self.shouldQueuePendingAttempt(for: session) {
             session.processingAttempts.append(Self.pendingProcessingAttempt())
         }
         session.updatedAt = Date()
@@ -1523,8 +1681,14 @@ final class MeetingSessionCoordinator: ObservableObject {
         } catch {
             // Preserve today's behavior: reinstall as interrupted despite the save failure.
         }
-        self.activeSession = session
-        self.state = .interrupted(session.id)
+        if session.state == .completed {
+            self.activeSession = nil
+            self.latestCompletedSession = session
+            self.state = .completed(session.id)
+        } else {
+            self.activeSession = session
+            self.state = .interrupted(session.id)
+        }
         await self.releaseActivityLease()
     }
 
@@ -1580,14 +1744,25 @@ final class MeetingSessionCoordinator: ObservableObject {
         self.activeSession = session
         self.trackHealth = Dictionary(uniqueKeysWithValues: session.audioTracks.map { ($0.kind, $0.health) })
         try? await self.store.save(session)
-        let processed = try await self.process(session, generation: generation)
+        let processed = try await self.process(
+            session,
+            generation: generation,
+            retainedLanguage: session.languageCode,
+            hadVisibleTranscript: false
+        )
         #if DEBUG
         diagnosticsStopSucceeded = true
         #endif
         return processed
     }
 
-    private func process(_ inputSession: MeetingSession, generation: UUID) async throws -> MeetingSession {
+    private func process(
+        _ inputSession: MeetingSession,
+        generation: UUID,
+        retainedLanguage: String,
+        hadVisibleTranscript: Bool,
+        requestedLanguageCode: String? = nil
+    ) async throws -> MeetingSession {
         let diagnosticStarted = ContinuousClock.now
         var diagnosticStage = MeetingProcessingStage.pending
         var diagnosticOutcome = "failed"
@@ -1620,8 +1795,10 @@ final class MeetingSessionCoordinator: ObservableObject {
         var session = inputSession
         do {
             let sessionDirectory = try await self.store.sessionDirectory(for: session.id)
+            var processingSession = session
+            processingSession.languageCode = requestedLanguageCode ?? session.languageCode
             let result = try await self.processing.process(
-                session: session,
+                session: processingSession,
                 sessionDirectory: sessionDirectory
             ) { [weak self] stage in
                 guard self?.operationGeneration == generation else { return }
@@ -1633,6 +1810,12 @@ final class MeetingSessionCoordinator: ObservableObject {
             else {
                 throw CancellationError()
             }
+            session.languageCode = processingSession.languageCode
+            var completedAttempt = result.attempt
+            if requestedLanguageCode != nil {
+                completedAttempt.languageCode = processingSession.languageCode
+            }
+            completedAttempt.retainedTranscriptLanguageCode = nil
             session.speakers = result.speakers
             session.transcriptSegments = result.segments
             session.postProcessing = result.postProcessing
@@ -1651,9 +1834,9 @@ final class MeetingSessionCoordinator: ObservableObject {
                 $0.completedAt == nil && $0.id != result.attempt.id
             }
             if let index = session.processingAttempts.lastIndex(where: { $0.id == result.attempt.id }) {
-                session.processingAttempts[index] = result.attempt
+                session.processingAttempts[index] = completedAttempt
             } else {
-                session.processingAttempts.append(result.attempt)
+                session.processingAttempts.append(completedAttempt)
             }
             if !result.skippedChunkIDs.isEmpty {
                 session.events.append(MeetingSessionEvent(
@@ -1672,6 +1855,8 @@ final class MeetingSessionCoordinator: ObservableObject {
                     }
                 }
             }
+            // This is the current transcript's status, not a permanent capture interruption.
+            session.events.removeAll { $0.kind == .transcriptCoverageIncomplete }
             if !result.coverageGaps.isEmpty {
                 let excludedSeconds = result.coverageGaps.reduce(0.0) { total, gap in
                     total + max(0, gap.end - gap.start)
@@ -1731,26 +1916,25 @@ final class MeetingSessionCoordinator: ObservableObject {
             #endif
             return session
         } catch {
-            if error is CancellationError { diagnosticOutcome = "cancelled" }
+            if error is CancellationError {
+                diagnosticOutcome = "cancelled"
+            }
             guard self.operationGeneration == generation else {
                 diagnosticOutcome = "superseded"
                 throw error
             }
             if error is CancellationError {
-                session.speakers = inputSession.speakers
-                session.transcriptSegments = inputSession.transcriptSegments
-                session.postProcessing = inputSession.postProcessing
-                session.transcriptCoverageGaps = inputSession.transcriptCoverageGaps
-                session.resultSidecarReference = inputSession.resultSidecarReference
-                session.transcriptIsComplete = inputSession.transcriptIsComplete
-                session.transcriptTimeDomain = inputSession.transcriptTimeDomain
-                session.state = .interrupted
+                self.restoreStoredTranscript(&session, from: inputSession)
+                if requestedLanguageCode != nil, let lastIndex = session.processingAttempts.indices.last {
+                    session.processingAttempts[lastIndex].errorCode = "cancelled"
+                    session.processingAttempts[lastIndex].completedAt = Date()
+                }
+                self.restoreRetainedLanguage(&session, retainedLanguage: retainedLanguage)
+                session.state = hadVisibleTranscript ? .completed : .interrupted
                 session.updatedAt = Date()
                 await self.flushQueuedPersistence()
                 try? await self.store.save(session)
-                self.activeSession = session
-                self.state = .interrupted(session.id)
-                self.operationGeneration = nil
+                self.publishRetryOutcome(session, failure: nil)
                 await self.releaseActivityLease()
                 throw error
             }
@@ -1759,25 +1943,18 @@ final class MeetingSessionCoordinator: ObservableObject {
             // A failed completed-session save must not durably publish a sidecar or overwrite the
             // last saved transcript under `.failed`. The verified new sidecar remains unreferenced
             // for retry/journal reconciliation.
-            session.speakers = inputSession.speakers
-            session.transcriptSegments = inputSession.transcriptSegments
-            session.postProcessing = inputSession.postProcessing
-            session.transcriptCoverageGaps = inputSession.transcriptCoverageGaps
-            session.resultSidecarReference = inputSession.resultSidecarReference
-            session.transcriptIsComplete = inputSession.transcriptIsComplete
-            session.transcriptTimeDomain = inputSession.transcriptTimeDomain
+            self.restoreStoredTranscript(&session, from: inputSession)
             if let lastIndex = session.processingAttempts.indices.last {
                 session.processingAttempts[lastIndex].errorCode = failure.code
                 session.processingAttempts[lastIndex].completedAt = Date()
             }
             session.failures.append(failure)
-            session.state = .failed
+            self.restoreRetainedLanguage(&session, retainedLanguage: retainedLanguage)
+            session.state = hadVisibleTranscript ? .completed : .failed
             session.updatedAt = Date()
             await self.flushQueuedPersistence()
             try? await self.store.save(session)
-            self.activeSession = session
-            self.state = .failed(session.id, failure)
-            self.operationGeneration = nil
+            self.publishRetryOutcome(session, failure: hadVisibleTranscript ? nil : failure)
             await self.releaseActivityLease()
             throw error
         }
@@ -1915,7 +2092,9 @@ final class MeetingSessionCoordinator: ObservableObject {
                 case .sourceLost:
                     self.degradeReason = self.degradeReason ?? .sourceLoss
                 case .sourceRecovered:
-                    if self.degradeReason == .sourceLoss { self.degradeReason = nil }
+                    if self.degradeReason == .sourceLoss {
+                        self.degradeReason = nil
+                    }
                 case .voiceProcessingDeclined:
                     break
                 default:
@@ -2096,8 +2275,10 @@ final class MeetingSessionCoordinator: ObservableObject {
             )
         }
     }
+}
 
-    private static func makeTimebase() -> MeetingTimebaseMetadata {
+private extension MeetingSessionCoordinator {
+    static func makeTimebase() -> MeetingTimebaseMetadata {
         var info = mach_timebase_info_data_t()
         mach_timebase_info(&info)
         return MeetingTimebaseMetadata(
@@ -2215,6 +2396,37 @@ final class MeetingSessionCoordinator: ObservableObject {
     }
 }
 
+private extension MeetingSessionCoordinator {
+    nonisolated static func retainedCompletedLanguage(for session: MeetingSession) -> String? {
+        guard !session.transcriptSegments.isEmpty else { return nil }
+        if session.state == .completed {
+            return session.languageCode
+        }
+        if let completed = session.processingAttempts.last(where: {
+            $0.stage == .completed && $0.completedAt != nil && $0.errorCode == nil && $0.languageCode != nil
+        })?.languageCode {
+            return completed
+        }
+        return session.processingAttempts.reversed().compactMap(\.retainedTranscriptLanguageCode).first
+    }
+
+    nonisolated static func restoringCompletedResult(_ input: MeetingSession) -> MeetingSession? {
+        guard [.processing, .interrupted].contains(input.state),
+              let language = retainedCompletedLanguage(for: input)
+        else { return nil }
+        var session = input
+        session.languageCode = language
+        session.state = .completed
+        let now = Date()
+        for index in session.processingAttempts.indices where session.processingAttempts[index].completedAt == nil {
+            session.processingAttempts[index].completedAt = now
+            session.processingAttempts[index].errorCode = session.processingAttempts[index].errorCode ?? "interrupted"
+        }
+        session.updatedAt = now
+        return session
+    }
+}
+
 enum MeetingCoordinatorError: LocalizedError {
     case featureDisabled
     case recordingAlreadyActive
@@ -2224,6 +2436,7 @@ enum MeetingCoordinatorError: LocalizedError {
     case dictationActive
     case noCorrectionToUndo
     case maintenanceInProgress
+    case unsupportedRetranscriptionLanguage
 
     var errorDescription: String? {
         switch self {
@@ -2243,6 +2456,43 @@ enum MeetingCoordinatorError: LocalizedError {
             return "There is nothing to undo."
         case .maintenanceInProgress:
             return "FluidVoice is tidying up meeting storage. Try again in a moment."
+        case .unsupportedRetranscriptionLanguage:
+            return "Choose a language the meeting transcription model supports."
         }
+    }
+}
+
+extension MeetingSessionCoordinator {
+    /// Change only title metadata before suspending, so every subsequent capture/stop snapshot keeps it.
+    /// The serialized persistence queue prevents a slow rename save from overwriting newer audio or state.
+    private func renameRecordingSession(sessionID: MeetingSessionID, to title: String) async throws -> MeetingSession {
+        guard !self.isMutatingSession, !self.hasBlockingActivityTask, !self.isDeleting,
+              var session = self.activeSession, session.id == sessionID, self.isRecording
+        else { throw MeetingCoordinatorError.activityInProgress }
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { throw MeetingDomainError.emptyMeetingTitle }
+        self.isMutatingSession = true
+        defer { self.releaseMutationGate() }
+        session.title = trimmed
+        session.defaultTitleBase = nil
+        session.updatedAt = Date()
+        self.activeSession = session
+        do {
+            try await self.persistence.save(session)
+        } catch {
+            // Keep the edited title in the live snapshot so capture updates and stopping can retry it.
+            throw NSError(domain: "MeetingTitle", code: 1, userInfo: [
+                NSLocalizedDescriptionKey: "The title could not be saved yet. Recording can continue; try renaming again to retry.",
+                NSUnderlyingErrorKey: error,
+            ])
+        }
+        // Capture or Stop may have advanced the session while its title was being saved.
+        if let current = self.activeSession, current.id == sessionID {
+            return current
+        }
+        if let completed = self.latestCompletedSession, completed.id == sessionID {
+            return completed
+        }
+        return session
     }
 }

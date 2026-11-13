@@ -1102,23 +1102,7 @@ final class GlobalHotkeyManager: NSObject {
     }
 
     nonisolated static func modifierFlags(from flags: CGEventFlags) -> NSEvent.ModifierFlags {
-        var modifiers: NSEvent.ModifierFlags = []
-        if flags.contains(.maskSecondaryFn) {
-            modifiers.insert(.function)
-        }
-        if flags.contains(.maskCommand) {
-            modifiers.insert(.command)
-        }
-        if flags.contains(.maskAlternate) {
-            modifiers.insert(.option)
-        }
-        if flags.contains(.maskControl) {
-            modifiers.insert(.control)
-        }
-        if flags.contains(.maskShift) {
-            modifiers.insert(.shift)
-        }
-        return modifiers
+        NSEvent.ModifierFlags(rawValue: UInt(flags.rawValue)).intersection(HotkeyShortcut.shortcutModifierMask)
     }
 
     private nonisolated static func isTapEnabled(_ tap: CFMachPort?) -> Bool {
@@ -1619,9 +1603,7 @@ final class GlobalHotkeyManager: NSObject {
             let retryDelayNanoseconds: UInt64 = 50_000_000
 
             for _ in 0..<maxAttempts {
-                guard !Task.isCancelled else { return }
-                guard let self = self else { return }
-                guard self.isPendingReleaseStopCurrent(for: type, token: token) else { return }
+                guard !Task.isCancelled, let self = self, self.isPendingReleaseStopCurrent(for: type, token: token) else { return }
 
                 if self.asrService.isRunning {
                     guard !requireTargetMode || self.isRecordingTargetActive(for: type) else {
@@ -1639,9 +1621,7 @@ final class GlobalHotkeyManager: NSObject {
                 try? await Task.sleep(nanoseconds: retryDelayNanoseconds)
             }
 
-            guard !Task.isCancelled else { return }
-            guard let self = self else { return }
-            guard self.isPendingReleaseStopCurrent(for: type, token: token) else { return }
+            guard !Task.isCancelled, let self = self, self.isPendingReleaseStopCurrent(for: type, token: token) else { return }
             DebugLogger.shared.warning("\(label) deferred stop expired before recording started", source: "GlobalHotkeyManager")
             self.clearPendingReleaseStop(for: type, token: token)
         }
@@ -1916,8 +1896,7 @@ final class GlobalHotkeyManager: NSObject {
         modifiers: NSEvent.ModifierFlags
     ) -> Bool {
         // A held keyboard/mouse shortcut already owns this route.
-        guard behavior.holdModeType != .transcription || self.activePrimaryShortcutPress == nil else { return false }
-        guard !behavior.isModeKeyPressed() || self.activeModifierOnlyType == behavior.holdModeType else { return false }
+        guard behavior.holdModeType != .transcription || self.activePrimaryShortcutPress == nil, !behavior.isModeKeyPressed() || self.activeModifierOnlyType == behavior.holdModeType else { return false }
         let decision = ModifierOnlyShortcutFlagsDecision.evaluate(
             shortcut: behavior.shortcut,
             holdModeType: behavior.holdModeType,
@@ -1967,8 +1946,7 @@ final class GlobalHotkeyManager: NSObject {
 
     private func triggerPromptMode() {
         self.queueRecordingAction(for: .promptMode, shortcut: self.promptModeShortcut) { [weak self] in
-            guard let self = self else { return }
-            guard self.canTriggerRecordingAction("Prompt mode hotkey") else { return }
+            guard let self = self, self.canTriggerRecordingAction("Prompt mode hotkey") else { return }
             DebugLogger.shared.info("Prompt mode hotkey triggered", source: "GlobalHotkeyManager")
             await self.promptModeCallback?()
         }
@@ -1976,8 +1954,7 @@ final class GlobalHotkeyManager: NSObject {
 
     private func triggerPromptSelection(_ selection: SettingsStore.DictationPromptSelection, shortcut: HotkeyShortcut) {
         self.queueRecordingAction(for: .promptAssignment, shortcut: shortcut, selection: selection) { [weak self] in
-            guard let self = self else { return }
-            guard self.canTriggerRecordingAction("Prompt selection hotkey") else { return }
+            guard let self = self, self.canTriggerRecordingAction("Prompt selection hotkey") else { return }
             DebugLogger.shared.info("Prompt selection hotkey triggered", source: "GlobalHotkeyManager")
             await self.promptSelectionCallback?(selection)
         }
@@ -1985,8 +1962,7 @@ final class GlobalHotkeyManager: NSObject {
 
     private func triggerCommandMode() {
         self.queueRecordingAction(for: .commandMode, shortcut: self.commandModeShortcut) { [weak self] in
-            guard let self = self else { return }
-            guard self.canTriggerRecordingAction("Command mode hotkey") else { return }
+            guard let self = self, self.canTriggerRecordingAction("Command mode hotkey") else { return }
             DebugLogger.shared.info("Command mode hotkey triggered", source: "GlobalHotkeyManager")
             DebugLogger.shared.debug(
                 "GlobalHotkeyManager: command callback path, isRunning=\(self.asrService.isRunning), isReady=\(self.asrService.isAsrReady)",
@@ -1998,8 +1974,7 @@ final class GlobalHotkeyManager: NSObject {
 
     private func triggerRewriteMode() {
         self.queueRecordingAction(for: .rewriteMode, shortcut: self.rewriteModeShortcut) { [weak self] in
-            guard let self = self else { return }
-            guard self.canTriggerRecordingAction("Rewrite mode hotkey") else { return }
+            guard let self = self, self.canTriggerRecordingAction("Rewrite mode hotkey") else { return }
             DebugLogger.shared.info("Rewrite mode hotkey triggered", source: "GlobalHotkeyManager")
             DebugLogger.shared.debug(
                 "GlobalHotkeyManager: rewrite callback path, isRunning=\(self.asrService.isRunning), isReady=\(self.asrService.isAsrReady)",
@@ -2074,8 +2049,7 @@ final class GlobalHotkeyManager: NSObject {
         Task { @MainActor [weak self] in
             guard let self = self else { return }
             // Holding the chord auto-repeats the key-down; act only on the initial press.
-            guard !isAutorepeat else { return }
-            guard self.canTriggerRecordingAction("Paste last transcription hotkey") else { return }
+            guard !isAutorepeat, self.canTriggerRecordingAction("Paste last transcription hotkey") else { return }
             // Re-pasting mid-recording would be surprising; ignore while capture is active.
             guard !self.asrService.isRunning else {
                 DebugLogger.shared.info(
@@ -2092,8 +2066,7 @@ final class GlobalHotkeyManager: NSObject {
     private func triggerDictationMode(shortcut: HotkeyShortcut? = nil) {
         let shortcut = shortcut ?? self.activePrimaryShortcutPress?.shortcut ?? (self.activeModifierOnlyType == .transcription ? self.activeModifierOnlyShortcut : nil)
         self.queueRecordingAction(for: .transcription, shortcut: shortcut) { [weak self] in
-            guard let self = self else { return }
-            guard self.canTriggerRecordingAction("Dictate mode hotkey") else { return }
+            guard let self = self, self.canTriggerRecordingAction("Dictate mode hotkey") else { return }
             let model = SettingsStore.shared.selectedSpeechModel
             DebugLogger.shared.info("Dictate mode hotkey triggered", source: "GlobalHotkeyManager")
             DebugLogger.shared.debug(
@@ -2901,62 +2874,59 @@ extension GlobalHotkeyManager {
             }
 
             // Check dedicated rewrite mode hotkey
-            if self.rewriteModeShortcutEnabled {
-                if self.rewriteModeShortcut.matchesRecordingShortcut(keyCode: keyCode, modifiers: eventModifiers) {
-                    guard !isAutorepeat else { return nil }
-                    switch self.hotkeyMode {
-                    case .hold:
-                        // Press and hold: start on keyDown, stop on keyUp
-                        if !self.isRewriteKeyPressed {
-                            self.cancelPendingReleaseStop(for: .rewriteMode)
-                            self.clearHoldModeStartTriggered(for: .rewriteMode)
-                            self.isRewriteKeyPressed = true
-                            DebugLogger.shared.info("Rewrite mode shortcut pressed (hold mode) - starting", source: "GlobalHotkeyManager")
-                            self.triggerRewriteMode()
-                            self.markHoldModeStartTriggered(for: .rewriteMode)
-                        }
-                    case .automatic:
-                        if !self.isRewriteKeyPressed {
-                            self.isRewriteKeyPressed = true
-                            let isSameMode = self.asrService.isRunning && (self.isRewriteRecordingProvider?() ?? false)
-                            self.beginAutomaticPress(for: .rewriteMode, wasTargetActive: isSameMode)
-                            if self.asrService.isRunning {
-                                if isSameMode {
-                                    DebugLogger.shared.info("Rewrite mode shortcut pressed (automatic, same mode) - waiting for release", source: "GlobalHotkeyManager")
-                                } else {
-                                    DebugLogger.shared.info("Rewrite mode shortcut pressed (automatic, switch mode)", source: "GlobalHotkeyManager")
-                                    self.triggerRewriteMode()
-                                    self.markAutomaticPressStarted(for: .rewriteMode)
-                                }
+            if self.rewriteModeShortcutEnabled, self.rewriteModeShortcut.matchesRecordingShortcut(keyCode: keyCode, modifiers: eventModifiers) {
+                guard !isAutorepeat else { return nil }
+                switch self.hotkeyMode {
+                case .hold:
+                    // Press and hold: start on keyDown, stop on keyUp
+                    if !self.isRewriteKeyPressed {
+                        self.cancelPendingReleaseStop(for: .rewriteMode)
+                        self.clearHoldModeStartTriggered(for: .rewriteMode)
+                        self.isRewriteKeyPressed = true
+                        DebugLogger.shared.info("Rewrite mode shortcut pressed (hold mode) - starting", source: "GlobalHotkeyManager")
+                        self.triggerRewriteMode()
+                        self.markHoldModeStartTriggered(for: .rewriteMode)
+                    }
+                case .automatic:
+                    if !self.isRewriteKeyPressed {
+                        self.isRewriteKeyPressed = true
+                        let isSameMode = self.asrService.isRunning && (self.isRewriteRecordingProvider?() ?? false)
+                        self.beginAutomaticPress(for: .rewriteMode, wasTargetActive: isSameMode)
+                        if self.asrService.isRunning {
+                            if isSameMode {
+                                DebugLogger.shared.info("Rewrite mode shortcut pressed (automatic, same mode) - waiting for release", source: "GlobalHotkeyManager")
                             } else {
-                                DebugLogger.shared.info("Rewrite mode shortcut triggered (automatic) - starting", source: "GlobalHotkeyManager")
+                                DebugLogger.shared.info("Rewrite mode shortcut pressed (automatic, switch mode)", source: "GlobalHotkeyManager")
                                 self.triggerRewriteMode()
                                 self.markAutomaticPressStarted(for: .rewriteMode)
                             }
-                        }
-                    case .toggle:
-                        // Toggle mode: press to start, press again to stop
-                        if self.asrService.isRunningOrStarting {
-                            if self.isRewriteRecordingProvider?() ?? false {
-                                DebugLogger.shared.info("Rewrite mode shortcut pressed in Edit mode - stopping", source: "GlobalHotkeyManager")
-                                self.triggerRewriteMode()
-                            } else {
-                                DebugLogger.shared.info("Rewrite mode shortcut pressed while recording - switching mode", source: "GlobalHotkeyManager")
-                                self.triggerRewriteMode()
-                            }
                         } else {
-                            DebugLogger.shared.info("Rewrite mode shortcut triggered - starting", source: "GlobalHotkeyManager")
+                            DebugLogger.shared.info("Rewrite mode shortcut triggered (automatic) - starting", source: "GlobalHotkeyManager")
                             self.triggerRewriteMode()
+                            self.markAutomaticPressStarted(for: .rewriteMode)
                         }
                     }
-                    return nil
+                case .toggle:
+                    // Toggle mode: press to start, press again to stop
+                    if self.asrService.isRunningOrStarting {
+                        if self.isRewriteRecordingProvider?() ?? false {
+                            DebugLogger.shared.info("Rewrite mode shortcut pressed in Edit mode - stopping", source: "GlobalHotkeyManager")
+                            self.triggerRewriteMode()
+                        } else {
+                            DebugLogger.shared.info("Rewrite mode shortcut pressed while recording - switching mode", source: "GlobalHotkeyManager")
+                            self.triggerRewriteMode()
+                        }
+                    } else {
+                        DebugLogger.shared.info("Rewrite mode shortcut triggered - starting", source: "GlobalHotkeyManager")
+                        self.triggerRewriteMode()
+                    }
                 }
+                return nil
             }
 
             // Then check transcription hotkeys
             if let shortcut = self.primaryShortcuts.first(where: { $0.matchesRecordingShortcut(keyCode: keyCode, modifiers: eventModifiers) }) {
-                guard !isAutorepeat else { return nil }
-                guard self.beginPrimaryShortcutPress(.keyboard(shortcut)) else { return nil }
+                guard !isAutorepeat, self.beginPrimaryShortcutPress(.keyboard(shortcut)) else { return nil }
                 self.handlePrimaryDictationTriggerDown()
                 return nil
             }
@@ -3163,8 +3133,7 @@ private extension GlobalHotkeyManager {
             } onCancel: {
                 previous?.cancel()
             }
-            guard !Task.isCancelled else { return }
-            guard let self, self.recordingActionRevisions[type, default: 0] == revision else { return }
+            guard !Task.isCancelled, let self, self.recordingActionRevisions[type, default: 0] == revision else { return }
             defer {
                 if self.recordingActionRevisions[type, default: 0] == revision {
                     self.pendingRecordingActionCounts[type, default: 0] -= 1

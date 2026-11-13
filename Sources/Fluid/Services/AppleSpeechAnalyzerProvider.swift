@@ -12,7 +12,9 @@ import Speech
 /// This provides advanced speech-to-text with streaming capabilities.
 @available(macOS 26.0, *)
 final class AppleSpeechAnalyzerProvider: TranscriptionProvider {
-    var name: String { "Apple Speech (macOS 26+)" }
+    var name: String {
+        "Apple Speech (macOS 26+)"
+    }
 
     var isAvailable: Bool {
         // SpeechAnalyzer is always available on macOS 26+
@@ -20,7 +22,9 @@ final class AppleSpeechAnalyzerProvider: TranscriptionProvider {
     }
 
     private(set) var isReady: Bool = false
-    var shouldClearCacheAfterCancellation: Bool { false }
+    var shouldClearCacheAfterCancellation: Bool {
+        false
+    }
 
     /// Buffer converter for audio format conversion
     private var converter: BufferConverter?
@@ -35,6 +39,10 @@ final class AppleSpeechAnalyzerProvider: TranscriptionProvider {
     private let _cacheQueue = DispatchQueue(label: "com.fluidvoice.speechanalyzer.cache")
 
     init() {}
+
+    static func supportedLocaleIdentifiers() async -> [String] {
+        await SpeechTranscriber.supportedLocales.map { $0.identifier(.bcp47) }
+    }
 
     // MARK: - Lifecycle
 
@@ -221,7 +229,7 @@ final class AppleSpeechAnalyzerProvider: TranscriptionProvider {
         var finalText = ""
         let resultsTask = Task {
             DebugLogger.shared.debug("AppleSpeechAnalyzer: Results task started, waiting for results...", source: "AppleSpeechAnalyzerProvider")
-            for try await case let result in freshTranscriber.results {
+            for try await result in freshTranscriber.results {
                 let text = String(result.text.characters)
                 DebugLogger.shared.debug("AppleSpeechAnalyzer: Got result - isFinal: \(result.isFinal), text: '\(text)'", source: "AppleSpeechAnalyzerProvider")
                 if result.isFinal {
@@ -283,11 +291,7 @@ final class AppleSpeechAnalyzerProvider: TranscriptionProvider {
             sampleRate: 16_000,
             channels: 1,
             interleaved: false
-        ) else {
-            return nil
-        }
-
-        guard let buffer = AVAudioPCMBuffer(
+        ), let buffer = AVAudioPCMBuffer(
             pcmFormat: format,
             frameCapacity: AVAudioFrameCount(samples.count)
         ) else {
