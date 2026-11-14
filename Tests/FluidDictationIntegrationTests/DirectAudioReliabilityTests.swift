@@ -673,7 +673,7 @@ final class DirectAudioReliabilityTests: XCTestCase {
         )
         XCTAssertTrue(deliveryHandlerSection.contains("self.overlayLifecycleID == expectedOverlayLifecycleID"))
         XCTAssertTrue(normalOutputSection
-            .contains("shouldHideOverlay: deliveryResult.wasDispatched && !shouldShowAIProcessingFailure && !stopOverlay.didRequestHide && !spokenSendRequested"))
+            .contains("shouldHideOverlay: deliveryResult.wasDispatched && !stopOverlay.didRequestHide && !spokenSendRequested"))
         XCTAssertTrue(deliveryHandlerSection.contains("guard shouldHideOverlay else { return }"))
         XCTAssertFalse(deliveryHandlerSection.contains("await self.menuBarManager.beginProcessingCompletionAndHideOverlay"))
 

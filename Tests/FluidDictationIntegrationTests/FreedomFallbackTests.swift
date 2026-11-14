@@ -71,6 +71,25 @@ final class DictationTextDeliveryPolicyTests: XCTestCase {
         XCTAssertTrue(policy.shouldTypeExternally)
     }
 
+    /// AI cleanup failure is a notification only; it must never leave a failure card
+    /// in the overlay, which pill mode could not dismiss.
+    func testAICleanupFailureNotifiesWithoutKeepingOverlayOpen() throws {
+        let source = try String(
+            contentsOf: URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+                .appendingPathComponent("Sources/Fluid/ContentView.swift"),
+            encoding: .utf8
+        )
+        let failureBranches = source.components(separatedBy: "if shouldNotifyAIProcessingFailure {").dropFirst()
+        XCTAssertEqual(failureBranches.count, 2, "dictation and reprocess paths both report AI failure")
+        for branch in failureBranches {
+            let body = try XCTUnwrap(branch.components(separatedBy: "\n        }\n").first)
+            XCTAssertTrue(body.contains("NotificationService.showAIProcessingFallback"))
+            XCTAssertFalse(body.contains("showAIProcessingFailure"))
+            XCTAssertFalse(body.contains("finishProcessingKeepingOverlayVisible"))
+        }
+    }
+
     func testSendingExistingDraftDoesNotOverwriteClipboardWithEmptyText() {
         let policy = DictationTextDeliveryPolicy(
             deliversText: true,

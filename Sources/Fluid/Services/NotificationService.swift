@@ -74,7 +74,7 @@ enum NotificationService {
     private static func deliverAIProcessingFallback(error: String, using center: UNUserNotificationCenter) {
         let content = UNMutableNotificationContent()
         content.title = "AI Enhancement failed"
-        content.body = "Typed raw transcription instead."
+        content.body = "Used the raw dictation instead. It is also on your clipboard."
         content.subtitle = error
         content.sound = nil
         content.userInfo = [UserInfoKey.kind: Kind.aiProcessingFallback]

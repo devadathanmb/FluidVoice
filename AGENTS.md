@@ -9,6 +9,7 @@
 - Carbon cannot distinguish left/right-specific modifiers. Keep existing side-specific chords AX-required; record new keyboard chords with either-side modifiers when AX is unavailable.
 - AX is still required for cross-app text selection, focus capture/restoration, typing, and paste insertion. `TypingService` and `TextSelectionService` must stop when `AXIsProcessTrusted()` is false.
 - Clipboard copying is independent of AX and uses `NSPasteboard` through `ClipboardService`. `Copy to Clipboard` is the no-AX handoff; it does not insert text into another app.
+- AI post-processing failure delivers the raw transcript (typed when possible, always copied to the clipboard), posts a notification, and closes the overlay. Never leave an AI-failure card in the dictation overlay.
 - Without AX, completed dictation uses clipboard-only delivery, not a failed paste attempt or an Accessibility warning. Keep sandbox/history-only output free of clipboard side effects, and do not arm Spoken Send without AX.
 
 ## Local AI Post-Processing

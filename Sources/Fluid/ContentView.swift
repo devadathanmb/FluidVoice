@@ -3544,11 +3544,11 @@ struct ContentView: View {
             )
         }
 
-        let shouldShowAIProcessingFailure = DictationAIFailurePresentationPolicy.shouldPresent(
+        let shouldNotifyAIProcessingFailure = DictationAIFailurePresentationPolicy.shouldPresent(
             shouldPersistOutputs: shouldDeliverOutputs,
             fallbackReason: aiFallbackReason
         )
-        if !shouldShowAIProcessingFailure {
+        if !shouldNotifyAIProcessingFailure {
             self.pendingAIReprocessText = nil
         }
 
@@ -3709,7 +3709,7 @@ struct ContentView: View {
                     pipelineID: pipelineID,
                     pipelineStartedAt: pipelineStartedAt,
                     textReadyAt: finalTextReadyAt,
-                    shouldHideOverlay: deliveryResult.wasDispatched && !shouldShowAIProcessingFailure && !stopOverlay.didRequestHide && !spokenSendRequested,
+                    shouldHideOverlay: deliveryResult.wasDispatched && !stopOverlay.didRequestHide && !spokenSendRequested,
                     expectedOverlayLifecycleID: expectedOverlayLifecycleID
                 )
             }
@@ -3738,7 +3738,7 @@ struct ContentView: View {
             if case let .recoverableFailure(failure) = deliveryResult {
                 didFailTextDelivery = true
                 self.showStoppedDictationDeliveryFailure(failure, transcript: finalText, snapshot: stopSnapshot)
-            } else if !shouldShowAIProcessingFailure, !stopOverlay.didRequestHide {
+            } else if !stopOverlay.didRequestHide {
                 self.hideOverlayAfterOutput()
             }
             // Delivery UI must complete before correction tracking queries Accessibility.
@@ -3759,21 +3759,16 @@ struct ContentView: View {
 
         guard self.cancelledOutputLifecycleID != expectedOverlayLifecycleID || outputRoute == .historyOnly else { return }
 
-        // Submit raw fallback delivery before failure UI or notification work can
-        // compete with it on the main actor. Sandbox runs never present either.
-        if shouldShowAIProcessingFailure {
+        // Raw fallback delivery and its clipboard copy are already submitted. AI
+        // failure is reported only as a notification; the overlay closes normally.
+        if shouldNotifyAIProcessingFailure {
             self.pendingAIReprocessText = spokenSendParse.shouldSend ? normalizedTranscribedText : transcribedText
-            NotchContentState.shared.showAIProcessingFailure(
-                message: aiFallbackReason == DictationAIRequestError.timedOut.localizedDescription
-                    ? "AI timed out — raw dictation delivered" : "AI Enhancement failed — raw dictation delivered"
-            )
-            self.menuBarManager.finishProcessingKeepingOverlayVisible()
             if let aiFallbackNotificationError {
                 NotificationService.showAIProcessingFallback(error: aiFallbackNotificationError)
             }
         }
 
-        if !didTypeExternally, !shouldShowAIProcessingFailure, !didFailTextDelivery, !stopOverlay.didRequestHide {
+        if !didTypeExternally, !didFailTextDelivery, !stopOverlay.didRequestHide {
             self.hideOverlayAfterOutput()
         }
         if !shouldTypeExternally {
@@ -4645,11 +4640,11 @@ struct ContentView: View {
                 aiProcessingError: aiFallbackReason
             )
         }
-        let shouldShowAIProcessingFailure = DictationAIFailurePresentationPolicy.shouldPresent(
+        let shouldNotifyAIProcessingFailure = DictationAIFailurePresentationPolicy.shouldPresent(
             shouldPersistOutputs: true,
             fallbackReason: aiFallbackReason
         )
-        if !shouldShowAIProcessingFailure {
+        if !shouldNotifyAIProcessingFailure {
             self.pendingAIReprocessText = nil
         }
 
@@ -4693,16 +4688,13 @@ struct ContentView: View {
         }
 
         NotchOverlayManager.shared.updateTranscriptionText("")
-        if shouldShowAIProcessingFailure {
+        if shouldNotifyAIProcessingFailure {
             self.pendingAIReprocessText = transcribedText
-            NotchContentState.shared.showAIProcessingFailure()
-            self.menuBarManager.finishProcessingKeepingOverlayVisible()
             if let aiFallbackNotificationError {
                 NotificationService.showAIProcessingFallback(error: aiFallbackNotificationError)
             }
-        } else {
-            self.hideOverlayAfterOutput()
         }
+        self.hideOverlayAfterOutput()
 
         self.clearActiveRecordingMode()
     }
