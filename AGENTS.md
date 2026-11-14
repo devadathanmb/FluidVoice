@@ -54,8 +54,10 @@
 ## Verification And Distribution
 
 - Never commit personal signing-team changes. Build and test unsigned with `CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO`.
-- Run `scripts/format-and-lint.sh` for Swift changes. It formats `Sources/` before running strict SwiftLint. If a newer local SwiftFormat rewrites files you did not touch, revert those and keep only your changes.
+- Run `scripts/format-and-lint.sh` for Swift changes. It formats the changed Swift files under `Sources/`, then runs strict SwiftLint over the tree.
 - MLX needs Xcode's Metal Toolchain: `xcodebuild -downloadComponent MetalToolchain`.
+- Run tests locally before dispatching a DMG build; the DMG workflow skips them unless `run_tests` is ticked.
+- `scripts/format-and-lint.sh` and `Tests/run_ci_checks.sh` format only Swift files changed since the remote-tracking branch, i.e. unpushed and uncommitted work (`scripts/changed-swift-files.sh`; set `FORMAT_BASE`, e.g. a release tag, to widen it). Upstream code is not SwiftFormat-clean; never reformat files the fork does not change. `.swiftformat` disables rules newer than the codebase's formatting baseline.
 - Run tests with `xcodebuild test -project Fluid.xcodeproj -scheme Fluid -destination 'platform=macOS' CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO`, or `Tests/run_ci_checks.sh` for the full unsigned gate.
 - Keep the Tiny Whisper E2E test for local validation. CI may skip it because its output is nondeterministic on hosted macOS.
 - The local cleanup E2E test downloads and runs the default model only with `TEST_RUNNER_FLUID_LOCAL_CLEANUP_E2E=1`.

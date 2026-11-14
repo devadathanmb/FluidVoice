@@ -50,7 +50,13 @@ run_check() {
 # CI already gates this job on its Linux SwiftLint job. Local runs must perform
 # that check too; formatting validation must not silently edit the tested tree.
 if [ "${GITHUB_ACTIONS:-false}" != "true" ]; then
-    run_check formatting swiftformat --lint --config .swiftformat Sources
+    task_changed_swift=()
+    while IFS= read -r task_file; do
+        task_changed_swift+=("$task_file")
+    done < <(scripts/changed-swift-files.sh)
+    if [ "${#task_changed_swift[@]}" -gt 0 ]; then
+        run_check formatting swiftformat --lint --config .swiftformat "${task_changed_swift[@]}"
+    fi
     run_check lint swiftlint --strict --config .swiftlint.yml Sources Tests Package.swift
 fi
 run_check text-normalization sh Tests/TextNormalization/run.sh

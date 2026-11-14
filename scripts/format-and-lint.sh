@@ -48,8 +48,16 @@ ensure_tool() {
 ensure_tool swiftformat swiftformat
 ensure_tool swiftlint swiftlint
 
-echo "${BLUE}${BOLD}Running SwiftFormat...${RESET}"
-swiftformat --config .swiftformat Sources
+echo "${BLUE}${BOLD}Running SwiftFormat on changed files...${RESET}"
+changed_files=()
+while IFS= read -r file; do
+  changed_files+=("$file")
+done < <(scripts/changed-swift-files.sh)
+if [ "${#changed_files[@]}" -gt 0 ]; then
+  swiftformat --config .swiftformat "${changed_files[@]}"
+else
+  echo "No changed Swift files under Sources."
+fi
 
 # If SwiftFormat changed files, print them (but continue on to SwiftLint).
 if command -v git >/dev/null 2>&1 && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then

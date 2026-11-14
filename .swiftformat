@@ -26,3 +26,5 @@
 --wraparguments beforefirst
 --wrapcollections beforefirst
 --exclude .build,DerivedData,Fluid.xcodeproj
+# Rules added after the codebase's formatting baseline; newer SwiftFormat releases would rewrite every file.
+--disable wrapIfStatementBodies,wrapPropertyBodies,wrapFunctionBodies,repeatedGuard,nestedIf,docComments,redundantSwiftUIGroup,redundantMemberwiseInit,redundantVariable,contentBuilder

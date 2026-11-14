@@ -4,9 +4,10 @@ on:
   workflow_dispatch:
     inputs:
       run_tests:
-        description: Run the test suite before building the DMG
+        # Tests add a full Debug build (~13 min). Run them locally before pushing instead.
+        description: Also run the test suite (adds a Debug build, ~13 min)
         type: boolean
-        default: true
+        default: false
 
 permissions:
   contents: read
