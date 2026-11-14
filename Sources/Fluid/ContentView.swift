@@ -3406,7 +3406,24 @@ struct ContentView: View {
             do {
                 self.logAIProcessCall(pipelineID, postProcessingModelInfo, postProcessingInputChars)
                 let snapshotForAI = stopSnapshot
-                let result = try await request.value(timeoutSeconds: CancellableDictationRequest.postProcessingTimeoutSeconds) {
+                let usesPrivateAI = practiceModelID != nil || (stopSnapshot?.route ?? DictationProviderRoute.resolve(
+                    settings: SettingsStore.shared,
+                    dictationSlot: activeDictationSlot,
+                    appBundleID: appInfo.bundleId
+                )).usesPrivateAI
+                let prewarmTask = self.prewarmDictationTask
+                // A cold local model load must not count against the generation timeout.
+                var preparePrivateAI: (@MainActor () async -> Void)?
+                if usesPrivateAI {
+                    preparePrivateAI = {
+                        await prewarmTask?.value
+                        await PrivateAIIntegrationService.shared.prewarmDictation()
+                    }
+                }
+                let result = try await request.value(
+                    timeoutSeconds: CancellableDictationRequest.postProcessingTimeoutSeconds,
+                    prepare: preparePrivateAI
+                ) {
                     try await self.processTextWithAIMetrics(
                         normalizedTranscribedText,
                         overrideSystemPrompt: promptOverride,

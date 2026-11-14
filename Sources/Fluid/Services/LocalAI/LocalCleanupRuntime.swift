@@ -228,6 +228,8 @@ actor LocalCleanupRuntime {
         let cache = try context.model.newCache(parameters: nil)
         var start = 0
         while start < tokens.count {
+            // Escape or a timeout must not leave the GPU busy with a prefill nobody awaits.
+            try Task.checkCancellation()
             let end = min(start + Self.prefillChunkSize, tokens.count)
             let chunk = MLXArray(tokens[start..<end].map(Int32.init)).reshaped(1, end - start)
             _ = context.model(chunk, cache: cache)
@@ -246,6 +248,7 @@ actor LocalCleanupRuntime {
         maxTokens: Int,
         onText: (@Sendable (String) -> Void)?
     ) throws -> Result {
+        try Task.checkCancellation()
         let start = Date()
         var cache: [KVCache] = []
         var feed = tokens
@@ -267,6 +270,7 @@ actor LocalCleanupRuntime {
         var firstTokenAt: Date?
         var detokenizer = onText.map { _ in NaiveStreamingDetokenizer(tokenizer: loaded.context.tokenizer) }
         var generatedTokens: [Int] = []
+        try Task.checkCancellation()
         while let token = iterator.next() {
             if firstTokenAt == nil {
                 firstTokenAt = Date()

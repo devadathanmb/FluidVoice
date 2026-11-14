@@ -2,9 +2,15 @@ import Foundation
 
 nonisolated enum DictationAIRequestError: LocalizedError {
     case timedOut
+    case preparationTimedOut
 
     var errorDescription: String? {
-        "AI enhancement exceeded 10 seconds. Using raw dictation."
+        switch self {
+        case .timedOut:
+            "AI enhancement exceeded 10 seconds. Using raw dictation."
+        case .preparationTimedOut:
+            "The AI model did not load within 60 seconds. Using raw dictation."
+        }
     }
 }
 
@@ -13,6 +19,8 @@ nonisolated enum DictationAIRequestError: LocalizedError {
 @MainActor
 final class CancellableDictationRequest {
     static let postProcessingTimeoutSeconds: TimeInterval = 10
+    /// Loading a local model from disk is not generation; it gets its own, longer cap.
+    static let preparationTimeoutSeconds: TimeInterval = 60
     private var continuation: CheckedContinuation<any Sendable, Error>?
     private var worker: Task<Void, Never>?
     private var timeoutTask: Task<Void, Never>?
@@ -20,7 +28,13 @@ final class CancellableDictationRequest {
     private var isFinished = false
     private(set) var isCancelled = false
 
-    func value<Value: Sendable>(timeoutSeconds: TimeInterval? = nil, operation: @escaping @MainActor () async throws -> Value) async throws -> Value {
+    /// `prepare` runs before `operation` under `preparationTimeoutSeconds`; the
+    /// `timeoutSeconds` clock starts only once it returns.
+    func value<Value: Sendable>(
+        timeoutSeconds: TimeInterval? = nil,
+        prepare: (@MainActor () async -> Void)? = nil,
+        operation: @escaping @MainActor () async throws -> Value
+    ) async throws -> Value {
         if Task.isCancelled {
             self.cancel()
         }
@@ -31,22 +45,19 @@ final class CancellableDictationRequest {
         let result = try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<any Sendable, Error>) in
                 self.continuation = continuation
-                if let timeoutSeconds {
-                    self.timeoutTask = Task { @MainActor [weak self] in
-                        do {
-                            try await Task.sleep(for: .seconds(timeoutSeconds))
-                        } catch {
-                            return
-                        }
-                        guard let self, !self.isFinished else { return }
-                        let worker = self.worker
-                        self.finish(.failure(DictationAIRequestError.timedOut))
-                        worker?.cancel()
-                    }
-                }
                 self.worker = Task { @MainActor [weak self] in
                     do {
                         try Task.checkCancellation()
+                        if let prepare {
+                            if timeoutSeconds != nil {
+                                self?.armTimeout(Self.preparationTimeoutSeconds, error: .preparationTimedOut)
+                            }
+                            await prepare()
+                            try Task.checkCancellation()
+                        }
+                        if let timeoutSeconds {
+                            self?.armTimeout(timeoutSeconds, error: .timedOut)
+                        }
                         let result = try await operation()
                         try Task.checkCancellation()
                         self?.finish(.success(result))
@@ -72,6 +83,22 @@ final class CancellableDictationRequest {
         // The worker still owns its resource leases until it actually drains.
         self.finish(.failure(CancellationError()))
         worker?.cancel()
+    }
+
+    private func armTimeout(_ seconds: TimeInterval, error: DictationAIRequestError) {
+        self.timeoutTask?.cancel()
+        guard !self.isFinished else { return }
+        self.timeoutTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(for: .seconds(seconds))
+            } catch {
+                return
+            }
+            guard let self, !self.isFinished else { return }
+            let worker = self.worker
+            self.finish(.failure(error))
+            worker?.cancel()
+        }
     }
 
     private func finish(_ result: Result<any Sendable, Error>) {

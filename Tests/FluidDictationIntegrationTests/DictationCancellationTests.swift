@@ -232,6 +232,47 @@ final class DictationCancellationTests: XCTestCase {
         XCTAssertEqual(CancellableDictationRequest.postProcessingTimeoutSeconds, 10)
     }
 
+    func testPreparationTimeDoesNotCountAgainstGenerationDeadline() async throws {
+        let request = CancellableDictationRequest()
+        let result = try await request.value(
+            timeoutSeconds: 0.1,
+            prepare: { try? await Task.sleep(for: .milliseconds(300)) }
+        ) {
+            try await Task.sleep(for: .milliseconds(20))
+            return "enhanced text"
+        }
+        XCTAssertEqual(result, "enhanced text", "A slow model load must not consume the generation timeout")
+        XCTAssertEqual(CancellableDictationRequest.preparationTimeoutSeconds, 60)
+    }
+
+    func testEscapeDuringPreparationCancelsWithoutRunningOperation() async {
+        let request = CancellableDictationRequest()
+        let preparing = expectation(description: "Preparation started")
+        var operationRan = false
+        let caller = Task { @MainActor in
+            do {
+                _ = try await request.value(
+                    timeoutSeconds: 10,
+                    prepare: {
+                        preparing.fulfill()
+                        try? await Task.sleep(for: .milliseconds(200))
+                    }
+                ) {
+                    operationRan = true
+                    return "late"
+                }
+                XCTFail("Cancelled preparation must not deliver output")
+            } catch {
+                XCTAssertTrue(error is CancellationError)
+            }
+        }
+        await fulfillment(of: [preparing], timeout: 2)
+        request.cancel()
+        await caller.value
+        try? await Task.sleep(for: .milliseconds(300))
+        XCTAssertFalse(operationRan)
+    }
+
     func testEscapeBeforeDeadlineRemainsCancellationRatherThanFallback() async {
         let request = CancellableDictationRequest()
         request.cancel()
