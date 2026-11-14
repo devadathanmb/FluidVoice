@@ -212,6 +212,34 @@ final class OverlayCaptionPresentationTests: XCTestCase {
         }
     }
 
+    func testPillFailureCardStaysClickableAcrossItsWiderLayout() async throws {
+        let settings = SettingsStore.shared
+        let state = NotchContentState.shared
+        let previousPosition = settings.overlayPosition
+        let previousSize = settings.overlaySize
+        let controller = BottomOverlayWindowController.shared
+        let manager = NotchOverlayManager.shared
+        defer {
+            state.clearTextDeliveryFailure()
+            manager.hideImmediately()
+            settings.overlayPosition = previousPosition
+            settings.overlaySize = previousSize
+        }
+        settings.overlayPosition = .bottom
+        settings.overlaySize = .pill
+        manager.show(audioLevelPublisher: Just(CGFloat.zero).eraseToAnyPublisher(), mode: .dictation)
+        state.recordTextDeliveryFailure(.pasteCommandFailed, transcript: "hello world")
+        XCTAssertTrue(state.isTextDeliveryFailureVisible)
+        try await Task.sleep(for: .milliseconds(250))
+        let host = try XCTUnwrap(controller.contentViewForTests)
+        let container = try XCTUnwrap(host.window?.contentView)
+        // Beyond the collapsed pill's half-width but inside the small-layout card.
+        let pillHalfWidth = BottomOverlayView.LayoutConstants.get(for: .pill).containerWidth / 2
+        let point = NSPoint(x: container.bounds.midX + pillHalfWidth + 12, y: container.bounds.midY)
+        XCTAssertGreaterThan(container.bounds.width / 2, pillHalfWidth + 12, "The failure card must widen the pill window")
+        XCTAssertNotNil(container.hitTest(point), "The failure card's Dismiss control must not fall outside the pill hit area")
+    }
+
     func testCompactPromptMenuDismissalDoesNotChangeTheRecordingOrSelection() async throws {
         let settings = SettingsStore.shared
         let state = NotchContentState.shared

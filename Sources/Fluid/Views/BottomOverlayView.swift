@@ -2411,13 +2411,18 @@ private final class BottomOverlayContainerView: NSView {
 
 private final class BottomOverlayHostingView: NSHostingView<BottomOverlayView> {
     override func hitTest(_ point: NSPoint) -> NSView? {
-        if SettingsStore.shared.overlaySize == .pill {
+        let overlaySize = SettingsStore.shared.overlaySize
+        let state = NotchContentState.shared
+        // Failure cards draw a pill overlay with the small layout; hit-test what is drawn,
+        // or the card's Dismiss button falls outside the clickable pill.
+        let showsFailure = state.isAIProcessingFailureVisible || state.isTextDeliveryFailureVisible
+        if overlaySize == .pill, !showsFailure {
             let visibleOverlayBounds = self.bounds.insetBy(
                 dx: max((self.bounds.width - PillShadowMetrics.visibleWidth) / 2, PillShadowMetrics.hitTestInset),
                 dy: PillShadowMetrics.hitTestInset
             )
             guard visibleOverlayBounds.contains(point) else { return nil }
-        } else if SettingsStore.shared.overlaySize == .small {
+        } else if overlaySize == .small || overlaySize == .pill {
             let visibleOverlayBounds = self.bounds.insetBy(
                 dx: max(0, (self.bounds.width - SmallOverlayMetrics.visibleWidth) / 2),
                 dy: 0
