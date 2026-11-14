@@ -17,6 +17,7 @@ xcrun swiftc -O -parse-as-library \
     "$task_test_dir/HistorySearchRecord.swift" \
     Sources/Fluid/Persistence/TranscriptionHistoryDatabase.swift \
     Sources/Fluid/Persistence/TranscriptionHistoryStore.swift \
+    Sources/Fluid/Persistence/TestHostIsolation.swift \
     Tests/HistoryPersistenceBoundaryTests.swift \
     -lsqlite3 -o "$task_test_dir/history-tests"
 "$task_test_dir/history-tests"

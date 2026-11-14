@@ -326,9 +326,14 @@ final class OverlayCaptionPresentationTests: XCTestCase {
         window.isReleasedWhenClosed = false
         window.animationBehavior = .none
         window.contentView = view
+        // The bottom-left corner is often under the Dock; the shimmer correctly stops when occluded.
+        window.center()
         window.orderFrontRegardless()
         defer { window.orderOut(nil); window.contentView = nil; window.close() }
         try await Task.sleep(for: .milliseconds(50))
+        guard window.occlusionState.contains(.visible) else {
+            throw XCTSkip("WindowServer reports the test window occluded (display asleep or covered)")
+        }
         let gradient = try XCTUnwrap(view.layer?.sublayers?.first)
         XCTAssertNotNil(gradient.animation(forKey: "fluid.shimmer.locations"))
         window.alphaValue = 0

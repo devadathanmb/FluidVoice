@@ -126,9 +126,12 @@ final class TranscriptionHistoryWriter: @unchecked Sendable {
     /// defaults but share the default database and audio folder.
     init(defaults: UserDefaults = .standard, url: URL? = nil, otherInstallDefaults: [UserDefaults] = []) {
         self.defaults = defaults
-        self.url = url ?? URL(fileURLWithPath: NSHomeDirectory())
+        let isolatedURL = TestHostIsolation.applicationSupportOverride?
+            .appendingPathComponent("FluidVoice/TranscriptionHistory.sqlite3")
+        self.url = url ?? isolatedURL ?? URL(fileURLWithPath: NSHomeDirectory())
             .appendingPathComponent("Library/Application Support/FluidVoice/TranscriptionHistory.sqlite3")
-        self.otherInstallDefaults = url != nil ? otherInstallDefaults : ["com.FluidApp.app", "com.FluidApp.app.debug"]
+        // The test host must never import or clear another install's legacy history.
+        self.otherInstallDefaults = url != nil || isolatedURL != nil ? otherInstallDefaults : ["com.FluidApp.app", "com.FluidApp.app.debug"]
             .filter { $0 != Bundle.main.bundleIdentifier }
             .compactMap { UserDefaults(suiteName: $0) }
     }

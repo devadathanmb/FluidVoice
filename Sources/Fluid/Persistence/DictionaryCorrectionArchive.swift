@@ -63,7 +63,7 @@ nonisolated struct DictionaryCorrectionExample: Sendable {
 /// A local, portable dataset. No upload, automatic training, or age-based deletion.
 actor DictionaryCorrectionArchive {
     static let shared = DictionaryCorrectionArchive()
-    static let directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+    static let directory = TestHostIsolation.applicationSupportDirectory
         .appendingPathComponent("FluidVoice/Dictionary/TrainingExamples", isDirectory: true)
 
     struct Metadata: Codable, Sendable {

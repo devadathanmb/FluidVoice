@@ -16,6 +16,3 @@ FluidDictationIntegrationTests/MeetingRecoveryTests/testFluidMeetCompletedAction
 
 # Runs real Parakeet ASR over 15 s of audio several times (13 s).
 FluidDictationIntegrationTests/CustomDictionaryManualEntryTests/testProfileFreeLongDictationPreservesTextAndWordTimings
-
-# Depends on WindowServer animation timing; fails on some local machines.
-FluidDictationIntegrationTests/OverlayCaptionPresentationTests/testWaitingShimmerStopsWhenItsViewOrWindowIsHidden

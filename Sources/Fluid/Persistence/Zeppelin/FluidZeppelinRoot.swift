@@ -19,8 +19,7 @@ actor FluidZeppelinRoot {
     private var stopped = false
 
     init(root: URL? = nil) {
-        self.root = root ?? FileManager.default
-            .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        self.root = root ?? TestHostIsolation.applicationSupportDirectory
             .appendingPathComponent("FluidVoice/zeppelin", isDirectory: true)
     }
 

@@ -52,7 +52,7 @@ final class KeychainService {
         #if DEBUG
         // The XCTest host launches the full app. Reading the real item from a
         // differently signed test build makes macOS ask for the login password.
-        if Self.isXCTestHost {
+        if TestHostIsolation.isXCTestHost {
             let storage = InMemoryStorage()
             self.testingBackend = TestingBackend(load: { storage.load() }, save: { storage.save($0) })
             return
@@ -62,11 +62,6 @@ final class KeychainService {
     }
 
     #if DEBUG
-    private static var isXCTestHost: Bool {
-        ProcessInfo.processInfo.environment.keys.contains(where: { $0.hasPrefix("XCTest") })
-            || NSClassFromString("XCTestCase") != nil
-    }
-
     private final class InMemoryStorage: @unchecked Sendable {
         private let lock = NSLock()
         private var keys: [String: String] = [:]

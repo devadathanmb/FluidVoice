@@ -8,5 +8,6 @@ task_test_dir=$(mktemp -d /tmp/fluidvoice-correction-archive.XXXXXX)
 trap 'rm -rf "$task_test_dir"' EXIT
 xcrun swiftc -D DICTIONARY_ARCHIVE_STANDALONE -parse-as-library \
     Sources/Fluid/Persistence/DictionaryCorrectionArchive.swift \
+    Sources/Fluid/Persistence/TestHostIsolation.swift \
     Tests/Standalone/DictionaryCorrectionArchiveTests.swift -o "$task_test_dir/tests"
 "$task_test_dir/tests"

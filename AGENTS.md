@@ -62,4 +62,4 @@
 - `./build.sh` creates the public unsigned OSS build. `./build.sh fi` depends on the untracked private `build_with_FI_incremental.sh`; do not assume it exists.
 - `.github/workflows/personal-macos-dmg.yml` must remain manually dispatched, unsigned, ARM64, retain the hosted Whisper exclusion, and upload `FluidVoice-freedom-arm64.dmg` for 30 days. It is the fork's only workflow; upstream's `build.yml` is deleted, so keep it deleted when merging releases.
 - Hosted test exclusions live in `Tests/ci-skipped-tests.txt`, read by the DMG workflow and `Tests/run_ci_checks.sh`. Skip slow or flaky upstream tests there; do not delete upstream test files, which would conflict on every release merge.
-- The XCTest host runs the full app. `KeychainService.shared` uses an in-memory store under XCTest so tests never read the real Keychain item.
+- The XCTest host runs the full app. `TestHostIsolation` redirects the shared history database, search index, dictation audio, and correction archive to a temporary root, and `KeychainService.shared` uses an in-memory store, so tests never touch real user data or prompt for the Keychain.
