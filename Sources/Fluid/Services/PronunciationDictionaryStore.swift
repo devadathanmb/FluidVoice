@@ -79,7 +79,7 @@ actor PronunciationDictionaryStore {
     private var replacementGeneration = UUID()
 
     init(fileManager: FileManager = .default) {
-        let baseURL = fileManager.urls(
+        let baseURL = TestHostIsolation.applicationSupportOverride ?? fileManager.urls(
             for: .applicationSupportDirectory,
             in: .userDomainMask
         ).first

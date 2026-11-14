@@ -151,7 +151,8 @@ actor DictionaryPronunciationDebugArchive {
         guard !Task.isCancelled, DictionaryPronunciationExperiment.captureEnabled, !samples.isEmpty,
               samples.count <= 16_000 * 120 else { return }
         do {
-            let root = try self.directory ?? FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+            let root = try self.directory ?? (TestHostIsolation.applicationSupportOverride
+                ?? FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true))
                 .appendingPathComponent("FluidVoice/DictionaryDebug", isDirectory: true)
             try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
             let encoder = PropertyListEncoder()

@@ -79,7 +79,7 @@ actor DictionaryNegativeExampleStore {
     private let collectionEnabled: @Sendable () -> Bool
 
     init(
-        url: URL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        url: URL = TestHostIsolation.applicationSupportDirectory
             .appendingPathComponent("FluidVoice/dictionary-negative-examples-v1.plist"),
         collectionEnabled: @escaping @Sendable () -> Bool = { DictionaryMatcherExperiment.collectNegatives }
     ) {

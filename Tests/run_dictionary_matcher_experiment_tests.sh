@@ -14,6 +14,7 @@ xcrun swiftc -D DICTIONARY_EXPERIMENT_STANDALONE -O -parse-as-library \
     "$task_repo_dir/Sources/Fluid/Services/DictionaryCorrectionEditPolicy.swift" \
     "$task_repo_dir/Sources/Fluid/Services/DictionaryExperimentalMatcher.swift" \
     "$task_repo_dir/Sources/Fluid/Services/DictionaryNegativeExamples.swift" \
+    "$task_repo_dir/Sources/Fluid/Persistence/TestHostIsolation.swift" \
     "$task_repo_dir/Sources/Fluid/Services/DictionaryLearningEvidence.swift" \
     "$task_repo_dir/Tests/Standalone/DictionaryMatcherExperimentTests.swift" \
     -o "$task_test_dir/tests"
