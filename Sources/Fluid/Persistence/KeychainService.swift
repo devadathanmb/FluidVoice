@@ -49,8 +49,37 @@ final class KeychainService {
         #if FLUID_ASR_BASELINE
         fatalError("KeychainService is unavailable in the ASR baseline host")
         #endif
+        #if DEBUG
+        // The XCTest host launches the full app. Reading the real item from a
+        // differently signed test build makes macOS ask for the login password.
+        if Self.isXCTestHost {
+            let storage = InMemoryStorage()
+            self.testingBackend = TestingBackend(load: { storage.load() }, save: { storage.save($0) })
+            return
+        }
+        #endif
         self.testingBackend = nil
     }
+
+    #if DEBUG
+    private static var isXCTestHost: Bool {
+        ProcessInfo.processInfo.environment.keys.contains(where: { $0.hasPrefix("XCTest") })
+            || NSClassFromString("XCTestCase") != nil
+    }
+
+    private final class InMemoryStorage: @unchecked Sendable {
+        private let lock = NSLock()
+        private var keys: [String: String] = [:]
+
+        func load() -> [String: String] {
+            self.lock.withLock { self.keys }
+        }
+
+        func save(_ keys: [String: String]) {
+            self.lock.withLock { self.keys = keys }
+        }
+    }
+    #endif
 
     init(
         testingLoad: @escaping () throws -> [String: String],
@@ -113,6 +142,7 @@ final class KeychainService {
     func legacyProviderEntries() throws -> [String: String] {
         self.ioLock.lock()
         defer { self.ioLock.unlock() }
+        guard self.testingBackend == nil else { return [:] }
         var result: [String: String] = [:]
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
@@ -162,6 +192,7 @@ final class KeychainService {
     func removeLegacyEntries(providerIDs: [String] = []) throws {
         self.ioLock.lock()
         defer { self.ioLock.unlock() }
+        guard self.testingBackend == nil else { return }
         let targets: [String]
         if !providerIDs.isEmpty {
             targets = providerIDs

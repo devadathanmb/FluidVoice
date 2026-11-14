@@ -55,8 +55,10 @@
 - Never commit personal signing-team changes. Build and test unsigned with `CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO`.
 - Run `scripts/format-and-lint.sh` for Swift changes. It formats `Sources/` before running strict SwiftLint. If a newer local SwiftFormat rewrites files you did not touch, revert those and keep only your changes.
 - MLX needs Xcode's Metal Toolchain: `xcodebuild -downloadComponent MetalToolchain`.
-- Run tests with `xcodebuild test -project Fluid.xcodeproj -scheme Fluid -destination 'platform=macOS' CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO`.
+- Run tests with `xcodebuild test -project Fluid.xcodeproj -scheme Fluid -destination 'platform=macOS' CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO`, or `Tests/run_ci_checks.sh` for the full unsigned gate.
 - Keep the Tiny Whisper E2E test for local validation. CI may skip it because its output is nondeterministic on hosted macOS.
 - The local cleanup E2E test downloads and runs the default model only with `TEST_RUNNER_FLUID_LOCAL_CLEANUP_E2E=1`.
 - `./build.sh` creates the public unsigned OSS build. `./build.sh fi` depends on the untracked private `build_with_FI_incremental.sh`; do not assume it exists.
-- `.github/workflows/personal-macos-dmg.yml` must remain manually dispatched, unsigned, ARM64, retain the hosted Whisper exclusion, and upload `FluidVoice-freedom-arm64.dmg` for 30 days.
+- `.github/workflows/personal-macos-dmg.yml` must remain manually dispatched, unsigned, ARM64, retain the hosted Whisper exclusion, and upload `FluidVoice-freedom-arm64.dmg` for 30 days. It is the fork's only workflow; upstream's `build.yml` is deleted, so keep it deleted when merging releases.
+- Hosted test exclusions live in `Tests/ci-skipped-tests.txt`, read by the DMG workflow and `Tests/run_ci_checks.sh`. Skip slow or flaky upstream tests there; do not delete upstream test files, which would conflict on every release merge.
+- The XCTest host runs the full app. `KeychainService.shared` uses an in-memory store under XCTest so tests never read the real Keychain item.

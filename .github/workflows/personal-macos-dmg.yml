@@ -2,6 +2,11 @@ name: Personal macOS DMG
 
 on:
   workflow_dispatch:
+    inputs:
+      run_tests:
+        description: Run the test suite before building the DMG
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -25,6 +30,12 @@ jobs:
           xcodebuild -downloadComponent MetalToolchain
           xcrun metal --version
 
+      - name: Cache Swift package checkouts
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/DerivedData/SourcePackages
+          key: spm-${{ runner.os }}-${{ hashFiles('Fluid.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
+
       - name: Resolve Swift package dependencies
         run: |
           xcodebuild -resolvePackageDependencies \
@@ -32,17 +43,22 @@ jobs:
             -scheme Fluid \
             -derivedDataPath "$RUNNER_TEMP/DerivedData"
 
-      # Tiny Whisper GGUF output is nondeterministic on hosted macOS runners.
-      # Keep this E2E assertion available for local validation, as the main CI workflow does.
-      - name: Run tests (excluding flaky Tiny Whisper E2E)
+      # Tests/ci-skipped-tests.txt holds the hosted exclusions, including the
+      # nondeterministic Tiny Whisper E2E. Those tests stay runnable locally.
+      - name: Run tests (excluding Tests/ci-skipped-tests.txt)
+        if: ${{ inputs.run_tests }}
         run: |
+          skip_args=()
+          while IFS= read -r test_id; do
+            skip_args+=("-skip-testing:$test_id")
+          done < <(grep -Ev '^[[:space:]]*(#|$)' Tests/ci-skipped-tests.txt)
           xcodebuild test \
             -project Fluid.xcodeproj \
             -scheme Fluid \
             -destination 'platform=macOS,arch=arm64' \
             -derivedDataPath "$RUNNER_TEMP/DerivedData" \
             -disableAutomaticPackageResolution \
-            -skip-testing:FluidDictationIntegrationTests/DictationE2ETests/testDictationEndToEnd_whisperTiny_transcribesFixture \
+            "${skip_args[@]}" \
             CODE_SIGN_IDENTITY="" \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_ALLOWED=NO

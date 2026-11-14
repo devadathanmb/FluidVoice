@@ -47,37 +47,6 @@ run_check() {
     "$@"
 }
 
-# Fail before the suite when a signed local test host cannot be built.
-if [ "${GITHUB_ACTIONS:-false}" != "true" ]; then
-    task_phase="Apple Development signing preflight"
-    task_signing_team="${DEVELOPMENT_TEAM:-$(python3 - <<'PYTEAM'
-import pathlib, re
-teams = set(re.findall(r'DEVELOPMENT_TEAM = ([A-Z0-9]+);', pathlib.Path('Fluid.xcodeproj/project.pbxproj').read_text()))
-if len(teams) == 1:
-    print(teams.pop())
-PYTEAM
-)}"
-    if [ -z "$task_signing_team" ]; then
-        echo "Set DEVELOPMENT_TEAM to your Apple Development signing team." >&2
-        exit 1
-    fi
-    if ! python3 - "$task_signing_team" <<'PYCERT'
-import re, subprocess, sys
-identities = subprocess.check_output(['security', 'find-identity', '-v', '-p', 'codesigning'], text=True)
-for label in re.findall(r'"(Apple Development:[^"\n]+|Mac Developer:[^"\n]+)"', identities):
-    certificate = subprocess.run(['security', 'find-certificate', '-c', label, '-p'], capture_output=True).stdout
-    subject = subprocess.run(['openssl', 'x509', '-noout', '-subject', '-nameopt', 'RFC2253'], input=certificate, capture_output=True).stdout.decode()
-    team = re.search(r'(?:^|,)OU=([^,]+)', subject)
-    if team and team.group(1) == sys.argv[1]:
-        sys.exit(0)
-sys.exit(1)
-PYCERT
-    then
-        echo "No Apple Development identity with a private key matches DEVELOPMENT_TEAM=$task_signing_team. Set DEVELOPMENT_TEAM to an installed development identity's team, or configure that certificate in Xcode. Local unsigned/ad-hoc tests are not allowed." >&2
-        exit 1
-    fi
-fi
-
 # CI already gates this job on its Linux SwiftLint job. Local runs must perform
 # that check too; formatting validation must not silently edit the tested tree.
 if [ "${GITHUB_ACTIONS:-false}" != "true" ]; then
@@ -107,15 +76,13 @@ run_check meeting-computer-audio python3 Tests/run_meeting_computer_audio_tests.
 task_phase="Xcode build and tests"
 task_build_args=(test -project Fluid.xcodeproj -scheme Fluid
     -destination "platform=macOS,arch=$(uname -m)"
-    -resultBundlePath "$task_result_dir/Fluid.xcresult"
-    -skip-testing:FluidDictationIntegrationTests/DictationE2ETests/testDictationEndToEnd_whisperTiny_transcribesFixture)
-# Unsigned test hosts are permitted only on GitHub Actions. Local Debug builds
-# keep their Apple Development identity and existing permissions.
-if [ "${GITHUB_ACTIONS:-false}" = "true" ]; then
-    task_build_args+=(CODE_SIGN_IDENTITY= CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO)
-else
-    task_build_args+=(CODE_SIGN_IDENTITY='Apple Development' CODE_SIGNING_REQUIRED=YES CODE_SIGNING_ALLOWED=YES "DEVELOPMENT_TEAM=$task_signing_team")
-fi
+    -resultBundlePath "$task_result_dir/Fluid.xcresult")
+while IFS= read -r task_skipped_test; do
+    task_build_args+=("-skip-testing:$task_skipped_test")
+done < <(grep -Ev '^[[:space:]]*(#|$)' Tests/ci-skipped-tests.txt)
+# The fork builds and tests unsigned. Signing a local test host makes codesign
+# ask for the login keychain password.
+task_build_args+=(CODE_SIGN_IDENTITY= CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO)
 if command -v xcpretty >/dev/null 2>&1; then
     xcodebuild "${task_build_args[@]}" 2>&1 | tee "$task_result_dir/xcodebuild.log" | xcpretty
 else

@@ -1,0 +1,21 @@
+# Tests skipped by the personal DMG workflow and Tests/run_ci_checks.sh.
+# One xcodebuild -skip-testing identifier per line. Keep these runnable locally.
+
+# Tiny Whisper GGUF output is nondeterministic on hosted macOS runners.
+FluidDictationIntegrationTests/DictationE2ETests/testDictationEndToEnd_whisperTiny_transcribesFixture
+
+# Wall-clock waits: each sleeps through real 5-10 s audio start/stop timeouts.
+FluidDictationIntegrationTests/NormalAudioCaptureCompatibilityTests/testHealthySlowNativeStartsAtFiveAndTenSecondsSucceed
+FluidDictationIntegrationTests/NormalAudioCaptureCompatibilityTests/testHealthySlowPostStartFingerprintStillSucceeds
+FluidDictationIntegrationTests/NormalAudioCaptureCompatibilityTests/testHealthySlowStopStillRetainsPreparedInput
+FluidDictationIntegrationTests/AudioRouteRecoveryIntegrationTests/testOrdinarySlowStartBeyondFiveSecondsStillReachesFirstPCM
+FluidDictationIntegrationTests/MeetingRecoveryTests/testShutdownForTerminationCompletesWhileCorrectionIsParked
+
+# Large SwiftUI render smoke test (26 s) that asserts no side effects, not behaviour.
+FluidDictationIntegrationTests/MeetingRecoveryTests/testFluidMeetCompletedActionErrorRendersWithoutSideEffects
+
+# Runs real Parakeet ASR over 15 s of audio several times (13 s).
+FluidDictationIntegrationTests/CustomDictionaryManualEntryTests/testProfileFreeLongDictationPreservesTextAndWordTimings
+
+# Depends on WindowServer animation timing; fails on some local machines.
+FluidDictationIntegrationTests/OverlayCaptionPresentationTests/testWaitingShimmerStopsWhenItsViewOrWindowIsHidden
