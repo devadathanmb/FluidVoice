@@ -15,8 +15,10 @@
 
 - `Sources/Fluid/Services/LocalAI/` implements upstream's private provider seam (`PrivateAIProviderBridge`, compiled with `PRIVATE_AI_PROVIDER` on the app target only). Keep local AI changes inside that seam so release merges stay clean.
 - `LocalCleanupRuntime` runs mlx-swift-lm in process and must stay light beside dev tools: one resident model, a capped MLX buffer cache, and the instruction prefix prefilled once per vocabulary.
-- `LocalCleanupModelCatalog` downloads standard MLX checkpoints pinned to a Hugging Face revision, size-checked and SHA-256-checked. Publish converted or fine-tuned weights to Hugging Face; do not add on-device weight conversion.
-- `LocalCleanupPrompt.systemPrompt` is the model's training prompt byte for byte, pinned by a SHA-256 test. Change prompt and model together and keep `tools/local-ai-eval/prompts.py` in sync.
+- The fork runs ALTIC's Fluid-1 models for personal use only. Never re-host, redistribute, or fine-tune their weights.
+- `LocalCleanupModelCatalog` downloads checkpoints pinned to a Hugging Face revision, size-checked and SHA-256-checked. Models that are not published there, such as Fluid 1.1 Splash, are read from the official FluidVoice.app model folder and checked against its release manifest, never downloaded from ALTIC's servers by the fork.
+- On-device weight conversion is limited to FluidDecode checkpoints: splitting the fused linear-attention projection and decoding LUT-quantized layers into standard MLX weights. Do not add other conversions.
+- `LocalCleanupPrompt.systemPrompt` is the model's training prompt byte for byte, pinned by a SHA-256 test. For Fluid-1 it is the General / Formal prompt FluidVoice.app sends, recovered from its cached prompt tokens in `~/Library/Application Support/FluidIntelligence/Models/PrefixCache`. Change prompt and model together and keep `tools/local-ai-eval/prompts.py` in sync.
 - Custom dictionary entries become the prompt vocabulary. The output guard returns the raw transcript when the model answers, summarizes, truncates, or invents text; keep that fallback.
 - Choose or change models with `tools/local-ai-eval` (uv, Python 3.12) and judge them on the held-out real dictation history in its `private/`, not only synthetic cases. Personal data and history results are git-ignored; never commit them.
 

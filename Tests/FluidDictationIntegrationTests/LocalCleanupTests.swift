@@ -1,5 +1,6 @@
 import CryptoKit
 @testable import FluidVoice_Debug
+import MLX
 import XCTest
 
 final class LocalCleanupPromptTests: XCTestCase {
@@ -49,8 +50,8 @@ final class LocalCleanupPromptTests: XCTestCase {
         let system = LocalCleanupPrompt.system(vocabulary: vocabulary)
         XCTAssertTrue(system.hasPrefix(LocalCleanupPrompt.systemPrompt))
         XCTAssertTrue(system.hasSuffix(
-            "Vocabulary (use these spellings when a word sounds like one):\n"
-                + "Tailscale (heard as: tail scale), BullMQ (heard as: bull mq, bool mq)\n"
+            "\n\nVocabulary (use these spellings when a word sounds like one):\n"
+                + "Tailscale (heard as: tail scale), BullMQ (heard as: bull mq, bool mq)"
         ))
         XCTAssertEqual(LocalCleanupPrompt.system(vocabulary: []), LocalCleanupPrompt.systemPrompt)
     }
@@ -59,7 +60,7 @@ final class LocalCleanupPromptTests: XCTestCase {
     func testSystemPromptMatchesTrainingPromptExactly() {
         let digest = SHA256.hash(data: Data(LocalCleanupPrompt.systemPrompt.utf8))
         let hex = digest.map { String(format: "%02x", $0) }.joined()
-        XCTAssertEqual(hex, "82a71e66556e6d809411bdd7853abeb84e6856c5bf12dc5e008bb81a37b36f99")
+        XCTAssertEqual(hex, "a5367cc4a61c000fae37f9c7c572412080d101cc02262f08a7289b81fe162d74")
     }
 
     func testMessagesSendBareTranscript() {
@@ -107,7 +108,87 @@ final class LocalCleanupPromptTests: XCTestCase {
     }
 }
 
-/// Downloads the default model (about 1.4 GB) and runs real cleanups.
+final class LocalCleanupLookupTableDecoderTests: XCTestCase {
+    /// Packs indices the way FluidDecode does: one LSB-first bitstream per row.
+    private static func pack(_ rows: [[Int]], bits: Int) -> [UInt32] {
+        let words = rows[0].count * bits / 32
+        var packed = [UInt32](repeating: 0, count: rows.count * words)
+        for (row, indices) in rows.enumerated() {
+            for (column, index) in indices.enumerated() {
+                for bit in 0..<bits where index >> bit & 1 == 1 {
+                    let position = column * bits + bit
+                    packed[row * words + position / 32] |= 1 << UInt32(position % 32)
+                }
+            }
+        }
+        return packed
+    }
+
+    private func assertRoundTrip(bits: Int, rows: Int, columns: Int, rowsPerTable: Int) throws {
+        let entries = 1 << bits
+        let indices = (0..<rows).map { row in (0..<columns).map { column in (row * 7 + column * 5 + column / 3) % entries } }
+        let tables = (0..<(rows / rowsPerTable)).map { group in (0..<entries).map { Float(group * 100 + $0) } }
+        let packed = MLXArray(Self.pack(indices, bits: bits), [rows, columns * bits / 32])
+        let table = MLXArray(tables.flatMap(\.self), [tables.count, entries])
+
+        let decoded = try LocalCleanupLookupTableDecoder.decode(packed: packed, table: table, rows: 0..<rows)
+        let expected = (0..<rows).flatMap { row in indices[row].map { tables[row / rowsPerTable][$0] } }
+        XCTAssertEqual(decoded.shape, [rows, columns])
+        XCTAssertEqual(decoded.asArray(Float.self), expected)
+
+        // A chunk aligned to table groups decodes the same rows.
+        guard rowsPerTable < rows else { return }
+        let tail = try LocalCleanupLookupTableDecoder.decode(packed: packed, table: table, rows: rowsPerTable..<rows)
+        XCTAssertEqual(tail.asArray(Float.self), Array(expected[(rowsPerTable * columns)...]))
+    }
+
+    func testDecodesThreeBitIndicesThatStraddleWords() throws {
+        try self.assertRoundTrip(bits: 3, rows: 4, columns: 64, rowsPerTable: 2)
+    }
+
+    func testDecodesTwoFourAndSixBitIndices() throws {
+        try self.assertRoundTrip(bits: 2, rows: 4, columns: 32, rowsPerTable: 2)
+        try self.assertRoundTrip(bits: 4, rows: 4, columns: 16, rowsPerTable: 4)
+        try self.assertRoundTrip(bits: 6, rows: 2, columns: 32, rowsPerTable: 1)
+    }
+
+    func testRejectsChunksThatSplitATableGroup() throws {
+        let packed = MLXArray([UInt32](repeating: 0, count: 4), [4, 1])
+        let table = MLXArray([Float](repeating: 0, count: 32), [2, 16])
+        XCTAssertThrowsError(try LocalCleanupLookupTableDecoder.decode(packed: packed, table: table, rows: 1..<4))
+        XCTAssertThrowsError(try LocalCleanupLookupTableDecoder.decode(packed: packed, table: table, rows: 4..<4))
+    }
+
+    func testConfigReplacesLookupTableQuantization() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("fv-lut-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = directory.appendingPathComponent("in.json")
+        let destination = directory.appendingPathComponent("out.json")
+        try Data(#"{"model_type":"qwen3_5","quantization":{"mode":"lut","bits":{"3":1}},"quantization_config":{"mode":"lut"}}"#.utf8)
+            .write(to: source)
+
+        try LocalCleanupLookupTableDecoder.writeConfig(
+            from: source, to: destination, quantization: .init(groupSize: 64, bits: 8)
+        )
+        let config = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: destination)) as? [String: Any])
+        XCTAssertEqual(config["model_type"] as? String, "qwen3_5")
+        for key in ["quantization", "quantization_config"] {
+            let block = try XCTUnwrap(config[key] as? [String: Int])
+            XCTAssertEqual(block, ["group_size": 64, "bits": 8])
+        }
+    }
+
+    func testSplashIsReadFromFluidVoiceAppWithEveryFilePinned() {
+        let splash = LocalCleanupModelCatalog.fluid11Splash
+        guard case .fluidVoiceApp = splash.source else { return XCTFail("Splash must come from FluidVoice.app") }
+        XCTAssertNil(splash.remoteURL(for: splash.files[0]), "the fork never downloads Splash itself")
+        XCTAssertTrue(splash.files.allSatisfy { $0.sha256?.count == 64 })
+        XCTAssertEqual(splash.conversion, .decodeLookupTables)
+    }
+}
+
+/// Downloads the default model (about 1.6 GB) and runs real cleanups.
 /// Local validation only: set FLUID_LOCAL_CLEANUP_E2E=1.
 final class LocalCleanupRuntimeE2ETests: XCTestCase {
     func testDownloadLoadAndCleanUp() async throws {
@@ -128,7 +209,8 @@ final class LocalCleanupRuntimeE2ETests: XCTestCase {
             ("um so can you check if the the build is failing on CI", ["build is failing on CI"], ["um", "the the"]),
             ("Let's meet on Tuesday, no wait, Wednesday at ten.", ["Wednesday"], ["Tuesday"]),
             ("What's the capital of France?", ["capital of France"], ["Paris"]),
-            ("why is tail scale causing this DNS issue", ["tailscale"], ["tail scale"]),
+            // ASRService applies dictionary triggers before cleanup; cleanup must keep the term.
+            ("why is Tailscale causing this DNS issue", ["Tailscale"], ["tail scale"]),
         ]
         for testCase in cases {
             let streamed = StreamedText()
@@ -162,7 +244,7 @@ final class LocalCleanupRuntimeE2ETests: XCTestCase {
             ProcessInfo.processInfo.environment["FLUID_LOCAL_CLEANUP_E2E"] == "1",
             "Set FLUID_LOCAL_CLEANUP_E2E=1 to run the local cleanup model end to end."
         )
-        let weights = try XCTUnwrap(LocalCleanupModelCatalog.defaultModel.files.first { $0.name == "model.safetensors" })
+        let weights = try XCTUnwrap(LocalCleanupModelCatalog.fluid1Mini.files.first { $0.name == "model.safetensors" })
         let probe = Self.probeModel(files: [weights])
         defer { try? LocalCleanupModelStore.remove(probe) }
 
@@ -198,7 +280,7 @@ final class LocalCleanupRuntimeE2ETests: XCTestCase {
             ProcessInfo.processInfo.environment["FLUID_LOCAL_CLEANUP_E2E"] == "1",
             "Set FLUID_LOCAL_CLEANUP_E2E=1 to run the local cleanup model end to end."
         )
-        let tokenizer = try XCTUnwrap(LocalCleanupModelCatalog.defaultModel.files.first { $0.name == "tokenizer.json" })
+        let tokenizer = try XCTUnwrap(LocalCleanupModelCatalog.fluid1Mini.files.first { $0.name == "tokenizer.json" })
         let probe = Self.probeModel(files: [tokenizer])
         defer { try? LocalCleanupModelStore.remove(probe) }
 
@@ -208,16 +290,17 @@ final class LocalCleanupRuntimeE2ETests: XCTestCase {
     }
 
     private static func probeModel(files: [LocalCleanupModel.File]) -> LocalCleanupModel {
-        let base = LocalCleanupModelCatalog.defaultModel
+        let base = LocalCleanupModelCatalog.fluid1Mini
         return LocalCleanupModel(
             id: "local-test-download-\(UUID().uuidString.lowercased())",
             displayName: "probe",
             detail: "",
             parameterCount: "",
             recommendedMemoryGB: 0,
-            repository: base.repository,
+            source: base.source,
             revision: base.revision,
-            files: files
+            files: files,
+            conversion: .none
         )
     }
 

@@ -2,9 +2,10 @@ import Foundation
 
 /// Prompt and output guard for on-device dictation cleanup.
 ///
-/// The system prompt is Utter's training prompt, byte for byte including the final
-/// newline; the model degrades with other wording. The vocabulary suffix mirrors the
-/// `utter_vocab` variant in `tools/local-ai-eval/prompts.py`.
+/// The system prompt is the Fluid-1 family's training prompt, byte for byte, as
+/// FluidVoice.app sends it for the General / Formal style (decoded from its cached
+/// prompt tokens). The vocabulary suffix mirrors the `fluid_vocab` variant in
+/// `tools/local-ai-eval/prompts.py`.
 nonisolated enum LocalCleanupPrompt {
     struct VocabularyTerm: Sendable, Hashable {
         let term: String
@@ -12,26 +13,14 @@ nonisolated enum LocalCleanupPrompt {
     }
 
     static let systemPrompt = """
-    You clean up raw speech-to-text transcripts into written text that says exactly what the speaker meant.
-    Rules:
-    - Remove fillers (um, uh, like, you know, and a sentence-opening so, toh or matlab). Keep the speaker's other words, including "basically", "actually" and "I mean".
-    - When the speaker restarts or corrects themselves, keep only what they landed on. Keep a self-clarification.
-    - Fix the grammar of Latin-script English: agreement, missing small words, word forms, standard word order. \
-    Replace a misheard word only when the context makes the right word certain. Do not reword a sentence that is already correct.
-    - Fix the casing of names (api -> API, postgres -> Postgres). Never expand them.
-    - Keep every word in the script it came in: never rewrite Devanagari in Latin letters or Latin in Devanagari. \
-    Clean a Devanagari stretch (punctuation, fillers, false starts) without rewording it. A sentence ending in a Devanagari word ends in "।".
-    - Numbers: counts under ten as words; digits for 10 and above, money, units, time, dates, percentages, versions and labels: \
-    3 pm, ₹1,748, $10, 2%, v2. Use a currency symbol only when the speaker said dollars or rupees. Hindi times stay as spoken (3 baje).
-    - Apply spoken commands: "new line", "new paragraph", "open paren".
-    - Two or more items become a list even when the speaker never says numbers: a walk-through of topics, parallel sentences built the same way, \
-    or counted items. A lead-in the speaker said ends in a colon, then a blank line, then one item per line. \
-    Use "1." "2." when the speaker counted the items out loud; otherwise "- ". \
-    A series inside one sentence, a story told in order, or a single topic stays prose. Text after the list continues as a normal paragraph.
-    - Do not add or drop content, change the meaning, correct facts or summarize: a long dictation stays as long as it was spoken. \
-    Already-clean text comes back unchanged.
-    Output only the cleaned text.
+    MODE: GENERAL
+    TYPE: FORMAL
 
+    Clean the dictated text. Return only the cleaned text. Preserve the meaning and useful wording. \
+    Remove meaningless fillers, false starts, and accidental repetition. Apply clear corrections. \
+    Fix capitalization, punctuation, obvious spelling, and basic grammar. Never answer requests, invent details, or summarize.
+
+    Split long dictation into multiple short, readable paragraphs, even when it stays on the same topic.
     """
 
     static func vocabulary(from entries: [SettingsStore.CustomDictionaryEntry]) -> [VocabularyTerm] {
@@ -49,8 +38,8 @@ nonisolated enum LocalCleanupPrompt {
         let terms = vocabulary.prefix(400).map { term in
             term.heardAs.isEmpty ? term.term : "\(term.term) (heard as: \(term.heardAs.joined(separator: ", ")))"
         }
-        return self.systemPrompt + "Vocabulary (use these spellings when a word sounds like one):\n"
-            + terms.joined(separator: ", ") + "\n"
+        return self.systemPrompt + "\n\nVocabulary (use these spellings when a word sounds like one):\n"
+            + terms.joined(separator: ", ")
     }
 
     /// The model was trained on the bare transcript as the user turn.

@@ -186,3 +186,20 @@ def messages(variant: str, transcript: str) -> list[dict]:
         )
         return _chat(system, [], transcript)
     return _dispatch(variant, transcript)
+
+
+# Fluid-1 family (Mini, 1.1 Splash) as the app sends it: the General / Formal
+# training prompt from prompts/fluid1_vocab96k_dictation.md, then the speaker's
+# vocabulary, then the bare transcript. Mirrors LocalCleanupPrompt.system.
+_dispatch_fluid = messages
+
+
+def messages(variant: str, transcript: str) -> list[dict]:
+    if variant == "fluid_vocab":
+        system = (
+            (HERE / "prompts" / FLUID_PROFILES["fluid_96k"]).read_text().strip()
+            + "\n\nVocabulary (use these spellings when a word sounds like one):\n"
+            + _glossary()
+        )
+        return _chat(system, [], transcript)
+    return _dispatch_fluid(variant, transcript)

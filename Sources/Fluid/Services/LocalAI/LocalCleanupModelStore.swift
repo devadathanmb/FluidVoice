@@ -1,7 +1,8 @@
 import CryptoKit
 import Foundation
+import MLX
 
-/// Downloads and verifies local cleanup checkpoints on disk.
+/// Downloads, verifies, and prepares local cleanup checkpoints on disk.
 nonisolated enum LocalCleanupModelStore {
     static let readyMarker = ".fluidvoice-ready"
 
@@ -14,6 +15,24 @@ nonisolated enum LocalCleanupModelStore {
             .appendingPathComponent("Models", isDirectory: true)
     }
 
+    /// Where the official FluidVoice.app keeps the Fluid Intelligence checkpoints it downloaded.
+    static var fluidVoiceAppModelsDirectory: URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        return base
+            .appendingPathComponent("FluidIntelligence", isDirectory: true)
+            .appendingPathComponent("Models", isDirectory: true)
+    }
+
+    /// True when the model can be installed: always for downloads, and for a
+    /// FluidVoice.app checkpoint only while the app's copy has every pinned file
+    /// at its pinned size. Hashes are checked during install.
+    static func isSourceAvailable(_ model: LocalCleanupModel) -> Bool {
+        guard case .fluidVoiceApp = model.source else { return true }
+        guard let source = model.sourceURL else { return false }
+        return model.files.allSatisfy { self.fileSize(source.appendingPathComponent($0.name)) == $0.byteCount }
+    }
+
     static func directory(for model: LocalCleanupModel) -> URL {
         self.rootDirectory.appendingPathComponent(model.directoryName, isDirectory: true)
     }
@@ -24,14 +43,10 @@ nonisolated enum LocalCleanupModelStore {
         return revision.trimmingCharacters(in: .whitespacesAndNewlines) == model.revision
     }
 
-    /// Download any missing files and verify them. Only hash-pinned files are reused
-    /// from disk, and only after their hash matches again, so a revision bump that
-    /// keeps a file's size can never leave stale bytes behind. Small unhashed files
-    /// are always fetched fresh.
-    static func install(
-        _ model: LocalCleanupModel,
-        progress: (@Sendable (_ written: Int64, _ expected: Int64) async -> Void)?
-    ) async throws -> URL {
+    typealias Progress = @Sendable (_ written: Int64, _ expected: Int64) async -> Void
+
+    /// Fetch and verify the model's files, then convert the checkpoint if needed.
+    static func install(_ model: LocalCleanupModel, progress: Progress?) async throws -> URL {
         let directory = self.directory(for: model)
         if self.isInstalled(model) {
             return directory
@@ -41,6 +56,32 @@ nonisolated enum LocalCleanupModelStore {
         try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
         try? fileManager.removeItem(at: directory.appendingPathComponent(self.readyMarker))
 
+        switch model.source {
+        case .huggingFace:
+            try await self.download(model, into: directory, progress: progress)
+        case .fluidVoiceApp:
+            try await self.importFromFluidVoiceApp(model, into: directory, progress: progress)
+        }
+
+        switch model.conversion {
+        case .none, .decodeLookupTables:
+            break
+        case .splitFusedLinearAttention:
+            try self.splitFusedLinearAttention(in: directory)
+        }
+        try model.revision.write(
+            to: directory.appendingPathComponent(self.readyMarker), atomically: true, encoding: .utf8
+        )
+        return directory
+    }
+
+    /// Download any missing files and verify them. Only hash-pinned files are reused
+    /// from disk, and only after their hash matches again, so a revision bump that
+    /// keeps a file's size can never leave stale bytes behind, and a weights file
+    /// split by an interrupted install is fetched again. Small unhashed files are
+    /// always fetched fresh.
+    private static func download(_ model: LocalCleanupModel, into directory: URL, progress: Progress?) async throws {
+        let fileManager = FileManager.default
         let expected = model.totalByteCount
         var completed: Int64 = 0
         for file in model.files {
@@ -69,11 +110,54 @@ nonisolated enum LocalCleanupModelStore {
             completed += file.byteCount
             await progress?(completed, expected)
         }
+    }
 
-        try model.revision.write(
-            to: directory.appendingPathComponent(self.readyMarker), atomically: true, encoding: .utf8
+    /// Verify FluidVoice.app's copy against the pinned manifest, then build an MLX
+    /// checkpoint from it. Progress covers hashing the source, then decoding.
+    private static func importFromFluidVoiceApp(
+        _ model: LocalCleanupModel,
+        into directory: URL,
+        progress: Progress?
+    ) async throws {
+        guard let source = model.sourceURL, self.isSourceAvailable(model) else {
+            throw LocalCleanupError.sourceUnavailable(model.displayName)
+        }
+        let fileManager = FileManager.default
+        let weightsBytes = model.files.first { $0.name == "model.safetensors" }?.byteCount ?? 0
+        let expected = model.totalByteCount + weightsBytes
+        var completed: Int64 = 0
+        for file in model.files {
+            try Task.checkCancellation()
+            let original = source.appendingPathComponent(file.name)
+            guard file.sha256 != nil, self.isVerified(original, as: file) else {
+                throw LocalCleanupError.checksumMismatch(file.name)
+            }
+            completed += file.byteCount
+            await progress?(completed, expected)
+        }
+
+        for name in ["tokenizer.json", "tokenizer_config.json", "chat_template.jinja"] {
+            let destination = directory.appendingPathComponent(name)
+            try? fileManager.removeItem(at: destination)
+            try fileManager.copyItem(at: source.appendingPathComponent(name), to: destination)
+        }
+
+        guard model.conversion == .decodeLookupTables else {
+            throw LocalCleanupError.unsupportedCheckpoint("FluidVoice.app checkpoints need lookup-table decoding")
+        }
+        let base = completed
+        let quantization = try await LocalCleanupLookupTableDecoder.convert(
+            weights: source.appendingPathComponent("model.safetensors"),
+            to: directory.appendingPathComponent("model.safetensors")
+        ) { fraction in
+            await progress?(base + Int64(Double(weightsBytes) * fraction), expected)
+        }
+        try LocalCleanupLookupTableDecoder.writeConfig(
+            from: source.appendingPathComponent("config.json"),
+            to: directory.appendingPathComponent("config.json"),
+            quantization: quantization
         )
-        return directory
+        await progress?(expected, expected)
     }
 
     static func remove(_ model: LocalCleanupModel) throws {
@@ -91,6 +175,55 @@ nonisolated enum LocalCleanupModelStore {
             options: [.skipsHiddenFiles]
         )) ?? []
         return entries.filter { $0.hasDirectoryPath && $0.lastPathComponent != model.directoryName }
+    }
+
+    // MARK: - Fused projection split
+
+    /// FluidDecode stores `linear_attn.in_proj` rows as [qkv | z | b | a]. Affine
+    /// quantization groups run along the input dimension, so row slices are exact.
+    static func splitFusedLinearAttention(in directory: URL) throws {
+        let weightsURL = directory.appendingPathComponent("model.safetensors")
+        let configURL = directory.appendingPathComponent("config.json")
+        let config = try JSONSerialization.jsonObject(with: Data(contentsOf: configURL)) as? [String: Any] ?? [:]
+        let text = config["text_config"] as? [String: Any] ?? config
+        guard let keyHeads = text["linear_num_key_heads"] as? Int,
+              let valueHeads = text["linear_num_value_heads"] as? Int,
+              let keyDim = text["linear_key_head_dim"] as? Int,
+              let valueDim = text["linear_value_head_dim"] as? Int
+        else { throw LocalCleanupError.unsupportedCheckpoint("missing linear attention dimensions") }
+
+        let sizes: [(String, Int)] = [
+            ("qkv", 2 * keyHeads * keyDim + valueHeads * valueDim),
+            ("z", valueHeads * valueDim),
+            ("b", valueHeads),
+            ("a", valueHeads),
+        ]
+        let totalRows = sizes.reduce(0) { $0 + $1.1 }
+
+        let weights = try loadArrays(url: weightsURL)
+        let marker = "linear_attn.in_proj."
+        guard weights.keys.contains(where: { $0.contains(marker) }) else { return }
+
+        var converted: [String: MLXArray] = [:]
+        for (key, value) in weights {
+            guard let range = key.range(of: marker) else {
+                converted[key] = value
+                continue
+            }
+            guard value.dim(0) == totalRows else {
+                throw LocalCleanupError.unsupportedCheckpoint("\(key) has \(value.dim(0)) rows, expected \(totalRows)")
+            }
+            let prefix = key[..<range.lowerBound]
+            let suffix = key[range.upperBound...]
+            var offset = 0
+            for (name, rows) in sizes {
+                converted["\(prefix)linear_attn.in_proj_\(name).\(suffix)"] = value[offset..<offset + rows]
+                offset += rows
+            }
+        }
+        let temporary = directory.appendingPathComponent("model.split.safetensors")
+        try save(arrays: converted, metadata: ["format": "mlx"], url: temporary)
+        _ = try FileManager.default.replaceItemAt(weightsURL, withItemAt: temporary)
     }
 
     // MARK: - Helpers
@@ -120,6 +253,8 @@ nonisolated enum LocalCleanupError: LocalizedError {
     case invalidURL(String)
     case sizeMismatch(String)
     case checksumMismatch(String)
+    case unsupportedCheckpoint(String)
+    case sourceUnavailable(String)
     case modelNotInstalled(String)
     case unknownModel(String)
     case httpStatus(Int)
@@ -129,6 +264,8 @@ nonisolated enum LocalCleanupError: LocalizedError {
         case let .invalidURL(file): "Invalid download URL for \(file)."
         case let .sizeMismatch(file): "Downloaded \(file) has the wrong size."
         case let .checksumMismatch(file): "Downloaded \(file) failed its checksum."
+        case let .unsupportedCheckpoint(reason): "Unsupported model checkpoint: \(reason)."
+        case let .sourceUnavailable(name): "\(name) is not downloaded in FluidVoice.app. Download it there first."
         case let .modelNotInstalled(id): "Local model \(id) is not downloaded."
         case let .unknownModel(id): "Unknown local model \(id)."
         case let .httpStatus(code): "Model download failed with HTTP \(code)."

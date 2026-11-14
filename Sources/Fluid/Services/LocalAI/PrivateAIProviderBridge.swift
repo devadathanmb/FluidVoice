@@ -60,7 +60,7 @@ nonisolated struct LocalCleanupFeature: PrivateAIProviderFeatureProviding {
             artifact: PrivateAIModelArtifact(
                 identifier: model.id,
                 filename: model.directoryName,
-                downloadURL: URL(string: "https://huggingface.co/\(model.repository)/tree/\(model.revision)"),
+                downloadURL: model.sourceURL,
                 sha256: model.weightsSHA256,
                 byteCount: model.totalByteCount,
                 version: String(model.revision.prefix(7))
